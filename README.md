@@ -64,6 +64,7 @@ npm run build
 
 ## 문서
 
+- [**아키텍처 + 엔티티 모델 + 서비스 흐름**](./docs/architecture.md) — 새 합류자/리뷰어 시작점
 - [통합 가이드](./docs/integration-guide.md) — RP 개발자용
 - [에러 코드 카탈로그](./docs/error-codes.md)
 - [배포 가이드](./docs/deployment.md)
