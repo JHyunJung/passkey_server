@@ -107,81 +107,12 @@ public class AuthenticationService {
   @Transactional
   public AuthenticationResult finishAuthentication(AuthenticationVerifyRequest req) {
     TenantWebauthnConfig cfg = configService.requireCurrent();
-    ChallengeRecord stored =
-        challengeStore
-            .consume(req.ceremonyId())
-            .orElseThrow(() -> new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND));
-    if (stored.ceremonyType() != CeremonyType.AUTHENTICATION) {
-      throw new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND);
-    }
-
-    Credential credential =
-        credentialRepo
-            .findByCredentialId(req.credentialId())
-            .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
-    if (!credential.isActive()) {
-      throw new BusinessException(ErrorCode.CREDENTIAL_REVOKED);
-    }
-
-    AttestedCredentialData acd = attestedConverter.convert(credential.getPublicKeyCose());
-    Authenticator authenticator =
-        new AuthenticatorImpl(
-            acd, new NoneAttestationStatement(), credential.getSignatureCounter());
-
-    byte[] userHandle =
-        req.userHandleB64u() == null ? null : Base64UrlCodec.decode(req.userHandleB64u());
-    byte[] credentialIdBytes = Base64UrlCodec.decode(req.credentialId());
-    byte[] authenticatorData = Base64UrlCodec.decode(req.authenticatorDataB64u());
-    byte[] clientDataJson = Base64UrlCodec.decode(req.clientDataJsonB64u());
-    byte[] signature = Base64UrlCodec.decode(req.signatureB64u());
-
-    AuthenticationRequest authnReq =
-        new AuthenticationRequest(
-            credentialIdBytes, userHandle, authenticatorData, clientDataJson, signature);
-
-    Challenge challenge = new DefaultChallenge(Base64UrlCodec.decode(stored.challengeB64u()));
-    Set<Origin> origins = new LinkedHashSet<>();
-    for (String o : cfg.originList()) {
-      origins.add(new Origin(o));
-    }
-    ServerProperty serverProperty = new ServerProperty(origins, cfg.getRpId(), challenge);
-    boolean userVerificationRequired = cfg.getUserVerification().name().equals("REQUIRED");
-    AuthenticationParameters params =
-        new AuthenticationParameters(
-            serverProperty, authenticator, null, userVerificationRequired, true);
-
-    AuthenticationData authnData;
-    try {
-      authnData = webAuthnManager.parse(authnReq);
-      webAuthnManager.verify(authnData, params);
-    } catch (DataConversionException | VerificationException e) {
-      log.warn(
-          "Assertion verification failed for credential {}: {}",
-          req.credentialId(),
-          e.getMessage());
-      metrics.getAuthenticationFailure().increment();
-      throw new BusinessException(ErrorCode.ASSERTION_INVALID, e.getMessage());
-    }
+    ChallengeRecord stored = consumeChallenge(req);
+    Credential credential = lookupActiveCredential(req);
+    AuthenticationData authnData = verifyAssertion(cfg, stored, credential, req);
 
     long newCounter = authnData.getAuthenticatorData().getSignCount();
-    // throws SIGNATURE_COUNTER_REGRESSION when counter regressed; counter == 0 (no-counter) is OK.
-    try {
-      credential.updateSignatureCounter(newCounter);
-    } catch (BusinessException e) {
-      if (e.getErrorCode() == ErrorCode.SIGNATURE_COUNTER_REGRESSION) {
-        auditService.append(
-            AuditEventType.SIGNATURE_COUNTER_REGRESSION,
-            ActorType.END_USER,
-            credential.getTenantUserId().toString(),
-            "CREDENTIAL",
-            credential.getId().toString(),
-            java.util.Map.of(
-                "storedCounter", credential.getSignatureCounter(), "newCounter", newCounter));
-        metrics.getSignatureCounterRegression().increment();
-        metrics.getAuthenticationFailure().increment();
-      }
-      throw e;
-    }
+    updateCounterOrAudit(credential, newCounter);
 
     TenantUser user =
         userRepo
@@ -208,9 +139,104 @@ public class AuthenticationService {
         tokens.accessExpiresIn());
   }
 
+  private ChallengeRecord consumeChallenge(AuthenticationVerifyRequest req) {
+    ChallengeRecord stored =
+        challengeStore
+            .consume(req.ceremonyId())
+            .orElseThrow(() -> new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND));
+    if (stored.ceremonyType() != CeremonyType.AUTHENTICATION) {
+      throw new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND);
+    }
+    return stored;
+  }
+
+  private Credential lookupActiveCredential(AuthenticationVerifyRequest req) {
+    Credential credential =
+        credentialRepo
+            .findByCredentialId(req.credentialId())
+            .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
+    if (!credential.isActive()) {
+      throw new BusinessException(ErrorCode.CREDENTIAL_REVOKED);
+    }
+    return credential;
+  }
+
+  private AuthenticationData verifyAssertion(
+      TenantWebauthnConfig cfg,
+      ChallengeRecord stored,
+      Credential credential,
+      AuthenticationVerifyRequest req) {
+    AttestedCredentialData acd = attestedConverter.convert(credential.getPublicKeyCose());
+    Authenticator authenticator =
+        new AuthenticatorImpl(
+            acd, new NoneAttestationStatement(), credential.getSignatureCounter());
+
+    byte[] userHandle =
+        req.userHandleB64u() == null ? null : Base64UrlCodec.decode(req.userHandleB64u());
+    AuthenticationRequest authnReq =
+        new AuthenticationRequest(
+            Base64UrlCodec.decode(req.credentialId()),
+            userHandle,
+            Base64UrlCodec.decode(req.authenticatorDataB64u()),
+            Base64UrlCodec.decode(req.clientDataJsonB64u()),
+            Base64UrlCodec.decode(req.signatureB64u()));
+
+    Challenge challenge = new DefaultChallenge(Base64UrlCodec.decode(stored.challengeB64u()));
+    Set<Origin> origins = new LinkedHashSet<>();
+    for (String o : cfg.originList()) {
+      origins.add(new Origin(o));
+    }
+    ServerProperty serverProperty = new ServerProperty(origins, cfg.getRpId(), challenge);
+    boolean userVerificationRequired = cfg.getUserVerification().name().equals("REQUIRED");
+    AuthenticationParameters params =
+        new AuthenticationParameters(
+            serverProperty, authenticator, null, userVerificationRequired, true);
+
+    try {
+      AuthenticationData authnData = webAuthnManager.parse(authnReq);
+      webAuthnManager.verify(authnData, params);
+      return authnData;
+    } catch (DataConversionException | VerificationException e) {
+      log.warn(
+          "Assertion verification failed for credential {}: {}",
+          sanitiseForLog(req.credentialId()),
+          sanitiseForLog(e.getMessage()));
+      metrics.getAuthenticationFailure().increment();
+      throw new BusinessException(ErrorCode.ASSERTION_INVALID, e.getMessage());
+    }
+  }
+
+  private void updateCounterOrAudit(Credential credential, long newCounter) {
+    try {
+      credential.updateSignatureCounter(newCounter);
+    } catch (BusinessException e) {
+      if (e.getErrorCode() == ErrorCode.SIGNATURE_COUNTER_REGRESSION) {
+        auditService.append(
+            AuditEventType.SIGNATURE_COUNTER_REGRESSION,
+            ActorType.END_USER,
+            credential.getTenantUserId().toString(),
+            "CREDENTIAL",
+            credential.getId().toString(),
+            java.util.Map.of(
+                "storedCounter", credential.getSignatureCounter(), "newCounter", newCounter));
+        metrics.getSignatureCounterRegression().increment();
+        metrics.getAuthenticationFailure().increment();
+      }
+      throw e;
+    }
+  }
+
   private static byte[] randomBytes(int len) {
     byte[] buf = new byte[len];
     RNG.nextBytes(buf);
     return buf;
+  }
+
+  /** Defends against log injection: strips CR/LF from user-controlled strings before logging. */
+  private static String sanitiseForLog(String s) {
+    if (s == null) {
+      return "";
+    }
+    return s.replace('\n', '_').replace('\r', '_');
   }
 }

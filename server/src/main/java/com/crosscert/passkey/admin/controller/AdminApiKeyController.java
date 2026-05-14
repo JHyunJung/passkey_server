@@ -4,6 +4,7 @@ import com.crosscert.passkey.admin.security.AdminAuthz;
 import com.crosscert.passkey.audit.domain.ActorType;
 import com.crosscert.passkey.audit.domain.AuditEventType;
 import com.crosscert.passkey.audit.service.AuditService;
+import com.crosscert.passkey.auth.apikey.cache.ApiKeyRevocationPublisher;
 import com.crosscert.passkey.auth.apikey.domain.ApiKey;
 import com.crosscert.passkey.auth.apikey.repository.ApiKeyRepository;
 import com.crosscert.passkey.auth.apikey.service.ApiKeyService;
@@ -36,8 +37,15 @@ public class AdminApiKeyController {
   private final ApiKeyService apiKeyService;
   private final ApiKeyRepository apiKeyRepo;
   private final AuditService auditService;
+  private final ApiKeyRevocationPublisher revocationPublisher;
 
-  public record IssueRequest(@NotBlank String name) {}
+  public record IssueRequest(
+      @NotBlank
+          @jakarta.validation.constraints.Size(max = 100)
+          @jakarta.validation.constraints.Pattern(
+              regexp = "^[\\x20-\\x7E]+$",
+              message = "name must be printable ASCII")
+          String name) {}
 
   public record ApiKeyView(
       UUID id, String prefix, String name, String status, OffsetDateTime createdAt) {
@@ -54,10 +62,7 @@ public class AdminApiKeyController {
   public ApiResponse<List<ApiKeyView>> list(@PathVariable UUID tenantId) {
     AdminAuthz.requireTenantAccess(tenantId);
     return ApiResponse.ok(
-        apiKeyRepo.findAll().stream()
-            .filter(k -> k.getTenantId().equals(tenantId))
-            .map(ApiKeyView::from)
-            .toList());
+        apiKeyRepo.findAllByTenantId(tenantId).stream().map(ApiKeyView::from).toList());
   }
 
   @PostMapping
@@ -98,6 +103,8 @@ public class AdminApiKeyController {
         "API_KEY",
         k.getId().toString(),
         Map.of());
+    // Broadcast to peer instances so their Caffeine caches evict immediately.
+    revocationPublisher.publish(k.getId());
     return ApiResponse.ok();
   }
 }

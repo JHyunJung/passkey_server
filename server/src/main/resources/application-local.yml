@@ -30,3 +30,6 @@ passkey:
       hikari:
         maximum-pool-size: 5
         auto-commit: false
+  actuator:
+    username: actuator
+    password: change-me-local-actuator

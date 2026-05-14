@@ -17,6 +17,12 @@ spring:
     default-schema: passkey
     create-schemas: true
     baseline-on-migrate: false
+  session:
+    store-type: ${PASSKEY_SESSION_STORE:redis}
+    timeout: 30m
+    redis:
+      flush-mode: on_save
+      namespace: passkey:session
 
 management:
   endpoints:

@@ -48,3 +48,6 @@ passkey:
     registration-per-minute: ${PASSKEY_RL_REGISTRATION:30}
     authentication-per-minute: ${PASSKEY_RL_AUTHENTICATION:60}
     default-per-minute: ${PASSKEY_RL_DEFAULT:120}
+  actuator:
+    username: ${PASSKEY_ACTUATOR_USER:actuator}
+    password: ${PASSKEY_ACTUATOR_PASSWORD}

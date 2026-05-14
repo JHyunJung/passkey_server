@@ -57,6 +57,7 @@ class PackageArchitectureTest {
             "..ratelimit..", // RateLimitFilter scopes buckets per tenant
             "..admin.security..", // AdminAuthz sets tenant context for admin-scoped endpoints
             "..admin.service..", // AdminTenantService writes audit rows under newly created tenant
+            "..auth.apikey.security..", // ApiKeyAuthenticationFilter establishes tenant context
             "..infrastructure.jpa.multitenancy..",
             "..infrastructure.jpa..")
         .check(CLASSES);

@@ -36,7 +36,18 @@ public class AdminWebauthnConfigController {
       List<String> origins,
       int timeoutMs,
       String userVerification,
-      String attestationConveyance) {}
+      String attestationConveyance) {
+
+    static ConfigView from(TenantWebauthnConfig c) {
+      return new ConfigView(
+          c.getRpId(),
+          c.getRpName(),
+          c.originList(),
+          c.getTimeoutMs(),
+          c.getUserVerification().name(),
+          c.getAttestationConveyance().name());
+    }
+  }
 
   public record UpsertRequest(
       @NotBlank String rpId,
@@ -53,14 +64,7 @@ public class AdminWebauthnConfigController {
     TenantWebauthnConfig c =
         repo.findByTenantId(tenantId)
             .orElseThrow(() -> new BusinessException(ErrorCode.WEBAUTHN_CONFIG_NOT_FOUND));
-    return ApiResponse.ok(
-        new ConfigView(
-            c.getRpId(),
-            c.getRpName(),
-            c.originList(),
-            c.getTimeoutMs(),
-            c.getUserVerification().name(),
-            c.getAttestationConveyance().name()));
+    return ApiResponse.ok(ConfigView.from(c));
   }
 
   @PutMapping
@@ -68,32 +72,17 @@ public class AdminWebauthnConfigController {
   public ApiResponse<ConfigView> upsert(
       @PathVariable UUID tenantId, @Valid @RequestBody UpsertRequest req) {
     AdminAuthz.requireTenantAccess(tenantId);
-    // Replace-or-create.
-    repo.findByTenantId(tenantId).ifPresent(repo::delete);
-    repo.flush();
+    UserVerificationPolicy uv = UserVerificationPolicy.valueOf(req.userVerification());
+    AttestationConveyance ac = AttestationConveyance.valueOf(req.attestationConveyance());
+
     TenantWebauthnConfig cfg =
-        TenantWebauthnConfig.create(tenantId, req.rpId(), req.rpName(), req.origins());
-    // The static factory builds with defaults; we set the validated values via reflection-free
-    // workaround: delete + recreate with all fields. The constructor is private, so we instead
-    // persist the defaults and immediately update with native query — simpler: just save defaults
-    // and rely on subsequent PUTs to migrate fields once a setter is added. For now, the
-    // rpId/name/origins
-    // round-trips; timeout/uv/conv are read-only via the static factory and use defaults.
-    TenantWebauthnConfig saved = repo.save(cfg);
-    return ApiResponse.ok(
-        new ConfigView(
-            saved.getRpId(),
-            saved.getRpName(),
-            saved.originList(),
-            saved.getTimeoutMs(),
-            saved.getUserVerification().name(),
-            saved.getAttestationConveyance().name()));
+        repo.findByTenantId(tenantId)
+            .orElseGet(
+                () ->
+                    repo.save(
+                        TenantWebauthnConfig.create(
+                            tenantId, req.rpId(), req.rpName(), req.origins())));
+    cfg.update(req.rpId(), req.rpName(), req.origins(), req.timeoutMs(), uv, ac);
+    return ApiResponse.ok(ConfigView.from(cfg));
   }
-
-  // Silence unused warnings — these enums are part of the public contract.
-  @SuppressWarnings("unused")
-  private static final UserVerificationPolicy UV_REF = UserVerificationPolicy.PREFERRED;
-
-  @SuppressWarnings("unused")
-  private static final AttestationConveyance AC_REF = AttestationConveyance.NONE;
 }

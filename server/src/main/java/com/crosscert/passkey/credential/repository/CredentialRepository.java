@@ -4,6 +4,8 @@ import com.crosscert.passkey.credential.domain.Credential;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface CredentialRepository extends JpaRepository<Credential, UUID> {
@@ -11,4 +13,6 @@ public interface CredentialRepository extends JpaRepository<Credential, UUID> {
   Optional<Credential> findByCredentialId(String credentialId);
 
   List<Credential> findAllByTenantUserId(UUID tenantUserId);
+
+  Page<Credential> findAllByTenantId(UUID tenantId, Pageable pageable);
 }

@@ -29,6 +29,12 @@ dependencies {
     // Spring Security — M4: full filter chain (admin session + RP API key).
     implementation("org.springframework.boot:spring-boot-starter-security")
 
+    // Spring Session — multi-instance admin sessions stored in Redis. Wave 2 hardening.
+    implementation("org.springframework.session:spring-session-data-redis")
+
+    // Caffeine — in-memory cache for API key verify results. Wave 2 perf optimisation (P-4).
+    implementation("com.github.ben-manes.caffeine:caffeine")
+
     // OpenAPI spec generation — M4: lets RP devs and the future React SPA discover the API.
     // 2.8.x required for Spring Framework 6.2 (Spring Boot 3.5 ships 6.2.x).
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.9")

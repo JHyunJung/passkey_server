@@ -5,14 +5,15 @@ import com.crosscert.passkey.audit.domain.AuditEventType;
 import com.crosscert.passkey.audit.service.AuditService;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
+import com.crosscert.passkey.common.response.PageResponse;
 import com.crosscert.passkey.tenant.context.TenantContext;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import com.crosscert.passkey.tenant.domain.Tenant;
 import com.crosscert.passkey.tenant.repository.TenantRepository;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,9 +31,9 @@ public class AdminTenantService {
   }
 
   @Transactional(readOnly = true)
-  public List<TenantView> listAll() {
+  public PageResponse<TenantView> listAll(Pageable pageable) {
     // Platform-operator scoped — assumes the controller already enforced role.
-    return tenantRepo.findAll().stream().map(TenantView::from).toList();
+    return PageResponse.from(tenantRepo.findAll(pageable).map(TenantView::from));
   }
 
   @Transactional

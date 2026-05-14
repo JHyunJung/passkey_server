@@ -191,9 +191,19 @@ public class RegistrationService {
 
   private TenantUser findOrCreateUser(String externalId, String displayName) {
     UUID tenantId = TenantContextHolder.required().tenantId();
-    return userRepo
-        .findByExternalId(externalId)
-        .orElseGet(() -> userRepo.save(TenantUser.create(tenantId, externalId, displayName)));
+    try {
+      return userRepo
+          .findByExternalId(externalId)
+          .orElseGet(() -> userRepo.save(TenantUser.create(tenantId, externalId, displayName)));
+    } catch (org.springframework.dao.DataIntegrityViolationException e) {
+      // Concurrent insert raced on uk_tenant_user__tenant_external — fetch the row that the
+      // other transaction committed.
+      return userRepo
+          .findByExternalId(externalId)
+          .orElseThrow(
+              () ->
+                  new BusinessException(ErrorCode.INTERNAL_SERVER_ERROR, "user creation race", e));
+    }
   }
 
   private static byte[] randomBytes(int len) {

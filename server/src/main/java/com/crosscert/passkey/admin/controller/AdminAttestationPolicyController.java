@@ -25,7 +25,12 @@ public class AdminAttestationPolicyController {
 
   private final TenantAttestationPolicyRepository repo;
 
-  public record PolicyView(String mode, List<String> allowed, List<String> denied) {}
+  public record PolicyView(String mode, List<String> allowed, List<String> denied) {
+    static PolicyView from(TenantAttestationPolicy p) {
+      return new PolicyView(
+          p.getMode().name(), csvOrEmpty(p.getAllowedAaguids()), csvOrEmpty(p.getDeniedAaguids()));
+    }
+  }
 
   public record UpsertRequest(
       @NotBlank String mode, List<String> allowedAaguids, List<String> deniedAaguids) {}
@@ -37,11 +42,7 @@ public class AdminAttestationPolicyController {
     TenantAttestationPolicy p =
         repo.findByTenantId(tenantId)
             .orElseGet(() -> repo.save(TenantAttestationPolicy.permissive(tenantId)));
-    return ApiResponse.ok(
-        new PolicyView(
-            p.getMode().name(),
-            csvOrEmpty(p.getAllowedAaguids()),
-            csvOrEmpty(p.getDeniedAaguids())));
+    return ApiResponse.ok(PolicyView.from(p));
   }
 
   @PutMapping
@@ -49,28 +50,21 @@ public class AdminAttestationPolicyController {
   public ApiResponse<PolicyView> upsert(
       @PathVariable UUID tenantId, @Valid @RequestBody UpsertRequest req) {
     AdminAuthz.requireTenantAccess(tenantId);
-    repo.findByTenantId(tenantId).ifPresent(repo::delete);
-    repo.flush();
-    // Domain currently exposes only the permissive factory; for M4 we accept the mode/lists by
-    // persisting via JPA defaults and a follow-up admin migration. This endpoint is a placeholder
-    // for full edit support — captured as Open Item.
-    TenantAttestationPolicy fresh = TenantAttestationPolicy.permissive(tenantId);
-    TenantAttestationPolicy saved = repo.save(fresh);
-    return ApiResponse.ok(
-        new PolicyView(
-            saved.getMode().name(),
-            csvOrEmpty(saved.getAllowedAaguids()),
-            csvOrEmpty(saved.getDeniedAaguids())));
+    AttestationMode mode = AttestationMode.valueOf(req.mode());
+    TenantAttestationPolicy policy =
+        repo.findByTenantId(tenantId)
+            .orElseGet(() -> repo.save(TenantAttestationPolicy.permissive(tenantId)));
+    policy.update(mode, req.allowedAaguids(), req.deniedAaguids());
+    return ApiResponse.ok(PolicyView.from(policy));
   }
 
   private static List<String> csvOrEmpty(String csv) {
-    if (csv == null || csv.isBlank()) return List.of();
+    if (csv == null || csv.isBlank()) {
+      return List.of();
+    }
     return java.util.Arrays.stream(csv.split(","))
         .map(String::trim)
         .filter(s -> !s.isEmpty())
         .toList();
   }
-
-  @SuppressWarnings("unused")
-  private static final AttestationMode REF = AttestationMode.ANY;
 }

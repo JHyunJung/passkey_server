@@ -67,4 +67,19 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
         .map(UUID::fromString)
         .collect(Collectors.toUnmodifiableSet());
   }
+
+  /** Mutates the policy in place (admin upsert). */
+  public void update(
+      AttestationMode mode, java.util.List<String> allowed, java.util.List<String> denied) {
+    this.mode = mode;
+    this.allowedAaguids = csvOrNull(allowed);
+    this.deniedAaguids = csvOrNull(denied);
+  }
+
+  private static String csvOrNull(java.util.List<String> list) {
+    if (list == null || list.isEmpty()) {
+      return null;
+    }
+    return String.join(",", list);
+  }
 }

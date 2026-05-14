@@ -77,4 +77,20 @@ public class TenantWebauthnConfig extends TenantScopedEntity {
         .filter(s -> !s.isEmpty())
         .toList();
   }
+
+  /** Mutates the WebAuthn config in place (admin upsert). */
+  public void update(
+      String rpId,
+      String rpName,
+      List<String> origins,
+      int timeoutMs,
+      UserVerificationPolicy userVerification,
+      AttestationConveyance attestationConveyance) {
+    this.rpId = rpId;
+    this.rpName = rpName;
+    this.origins = String.join(",", origins);
+    this.timeoutMs = timeoutMs;
+    this.userVerification = userVerification;
+    this.attestationConveyance = attestationConveyance;
+  }
 }

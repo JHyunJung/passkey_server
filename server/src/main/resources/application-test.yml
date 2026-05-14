@@ -7,6 +7,8 @@ spring:
     placeholders:
       app_runtime_password: test_runtime
       app_admin_password: test_admin
+  session:
+    store-type: none
 
 passkey:
   admin:

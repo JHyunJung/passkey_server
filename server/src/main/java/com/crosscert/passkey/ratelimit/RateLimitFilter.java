@@ -12,12 +12,14 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Applies per-tenant + per-endpoint-class rate limits after tenant resolution. {@code
- * /api/v1/rp/passkeys/register/*} and {@code .../authenticate/*} have stricter buckets than the
- * default; everything else falls back to a generic limit.
+ * Applies per-tenant + per-endpoint-class rate limits after tenant resolution. Stricter buckets for
+ * {@code register}, {@code authenticate}, and {@code admin-login} (the latter keyed by source IP to
+ * defeat password brute force); everything else falls back to a generic limit.
  */
 @RequiredArgsConstructor
 public class RateLimitFilter extends OncePerRequestFilter {
+
+  private static final int ADMIN_LOGIN_PER_MINUTE = 5;
 
   private final RateLimitProperties props;
   private final RateLimiter limiter;
@@ -35,17 +37,26 @@ public class RateLimitFilter extends OncePerRequestFilter {
   protected void doFilterInternal(
       HttpServletRequest req, HttpServletResponse res, FilterChain chain)
       throws ServletException, IOException {
-    String tenantSegment =
-        TenantContextHolder.optional()
-            .map(c -> c.tenantId().toString())
-            .orElse("anon:" + req.getRemoteAddr());
-
     int limit = pickLimit(req.getRequestURI());
-    String bucket = tenantSegment + ":" + classifyPath(req.getRequestURI());
+    String bucket = bucketKey(req);
     if (!limiter.tryAcquire(bucket, limit)) {
       throw new BusinessException(ErrorCode.RATE_LIMIT_EXCEEDED);
     }
     chain.doFilter(req, res);
+  }
+
+  private String bucketKey(HttpServletRequest req) {
+    String classification = classifyPath(req.getRequestURI());
+    if ("admin-login".equals(classification)) {
+      // Pre-auth path → key by client IP. Email-derived key requires reading the body which we
+      // can't safely do here; IP bucket is sufficient for v1 brute-force defence.
+      return "ip:" + req.getRemoteAddr() + ":admin-login";
+    }
+    String tenantSegment =
+        TenantContextHolder.optional()
+            .map(c -> c.tenantId().toString())
+            .orElse("anon:" + req.getRemoteAddr());
+    return tenantSegment + ":" + classification;
   }
 
   private int pickLimit(String uri) {
@@ -55,8 +66,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
     if (uri.startsWith("/api/v1/rp/passkeys/authenticate")) {
       return props.authenticationPerMinute();
     }
-    // v1.1: /api/v1/admin/auth/login should have a dedicated, stricter bucket keyed by source IP
-    // to defeat password brute force. Today it falls under defaultPerMinute.
+    if (uri.startsWith("/api/v1/admin/auth/login")) {
+      return ADMIN_LOGIN_PER_MINUTE;
+    }
     return props.defaultPerMinute();
   }
 
@@ -66,6 +78,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
     }
     if (uri.startsWith("/api/v1/rp/passkeys/authenticate")) {
       return "authenticate";
+    }
+    if (uri.startsWith("/api/v1/admin/auth/login")) {
+      return "admin-login";
     }
     return "default";
   }

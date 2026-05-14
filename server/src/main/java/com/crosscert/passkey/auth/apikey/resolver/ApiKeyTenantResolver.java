@@ -7,15 +7,17 @@ import com.crosscert.passkey.tenant.service.TenantQueryService;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 /**
- * Resolves tenant from the {@code X-API-Key} header. Active in all profiles. Runs before {@code
- * HeaderTenantResolver} so production traffic uses API keys even when local dev profile is
- * accidentally combined.
+ * Resolves tenant from the {@code X-API-Key} header in test/dev only. Production traffic is
+ * authenticated by {@code ApiKeyAuthenticationFilter} on the Spring Security chain, which both (a)
+ * returns a proper 401 on missing/invalid keys and (b) sets the SecurityContext.
  */
 @Component
+@Profile({"local", "test", "dev"})
 @Order(0)
 @RequiredArgsConstructor
 public class ApiKeyTenantResolver implements TenantResolver {

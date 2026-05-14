@@ -1,7 +1,10 @@
 package com.crosscert.passkey.admin.security;
 
 import com.crosscert.passkey.admin.repository.AdminUserRepository;
+import com.crosscert.passkey.auth.apikey.security.ApiKeyAuthenticationFilter;
+import com.crosscert.passkey.auth.apikey.service.ApiKeyService;
 import com.crosscert.passkey.common.response.ApiResponse;
+import com.crosscert.passkey.tenant.service.TenantQueryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -87,19 +90,34 @@ public class AdminSecurityConfig {
 
   @Bean
   @Order(2)
-  public SecurityFilterChain rpFilterChain(HttpSecurity http) throws Exception {
+  public SecurityFilterChain rpFilterChain(
+      HttpSecurity http, ApiKeyService apiKeyService, TenantQueryService tenantQueryService)
+      throws Exception {
     return http.securityMatcher("/api/v1/rp/**")
         .csrf(AbstractHttpConfigurer::disable)
         .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-        .authorizeHttpRequests(authz -> authz.anyRequest().permitAll())
+        .addFilterBefore(
+            new ApiKeyAuthenticationFilter(apiKeyService, tenantQueryService),
+            UsernamePasswordAuthenticationFilter.class)
+        .authorizeHttpRequests(authz -> authz.anyRequest().authenticated())
+        .exceptionHandling(
+            ex ->
+                ex.authenticationEntryPoint(
+                    (req, res, e) ->
+                        writeError(
+                            res, HttpStatus.UNAUTHORIZED, "A005", "Invalid or missing API key")))
         .build();
   }
 
   @Bean
   @Order(3)
   public SecurityFilterChain publicFilterChain(HttpSecurity http) throws Exception {
+    // Only health probes + info + diag + swagger are public. Prometheus, env, beans, etc. fall
+    // through to actuatorChain (Order 4) which requires basic auth or is reachable only from the
+    // private network in production (LB / k8s NetworkPolicy).
     return http.securityMatcher(
-            "/actuator/**",
+            "/actuator/health/**",
+            "/actuator/info",
             "/_diag/**",
             "/v3/api-docs/**",
             "/swagger-ui/**",
@@ -108,6 +126,21 @@ public class AdminSecurityConfig {
         .csrf(AbstractHttpConfigurer::disable)
         .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(authz -> authz.anyRequest().permitAll())
+        .build();
+  }
+
+  @Bean
+  @Order(4)
+  public SecurityFilterChain actuatorChain(HttpSecurity http) throws Exception {
+    // Sensitive actuator endpoints — /actuator/prometheus, /actuator/env, etc. — require
+    // authentication. HTTP basic against the in-memory actuator user. Production should
+    // additionally
+    // restrict access at the network layer (LB rule / k8s NetworkPolicy).
+    return http.securityMatcher("/actuator/**")
+        .csrf(AbstractHttpConfigurer::disable)
+        .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .httpBasic(org.springframework.security.config.Customizer.withDefaults())
+        .authorizeHttpRequests(authz -> authz.anyRequest().hasRole("ACTUATOR"))
         .build();
   }
 
