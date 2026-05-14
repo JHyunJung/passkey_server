@@ -1,0 +1,25 @@
+package com.crosscert.passkey.integration.support;
+
+import com.crosscert.passkey.tenant.repository.TenantRepository;
+import com.crosscert.passkey.tenant.repository.TenantUserRepository;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+@TestConfiguration
+public class TestSupportConfig {
+
+  @Bean
+  public TransactionTemplate transactionTemplate(PlatformTransactionManager tm) {
+    return new TransactionTemplate(tm);
+  }
+
+  @Bean
+  public TenantSeed tenantSeed(
+      TenantRepository tenantRepository,
+      TenantUserRepository tenantUserRepository,
+      TransactionTemplate txTemplate) {
+    return new TenantSeed(tenantRepository, tenantUserRepository, txTemplate);
+  }
+}

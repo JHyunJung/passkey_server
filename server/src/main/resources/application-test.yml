@@ -1,0 +1,17 @@
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 5
+      auto-commit: false
+  flyway:
+    placeholders:
+      app_runtime_password: test_runtime
+      app_admin_password: test_admin
+
+passkey:
+  admin:
+    enabled: false
+  rate-limit:
+    enabled: false
+  jwt:
+    secret: test-secret-please-ignore-this-is-32bytes-or-more

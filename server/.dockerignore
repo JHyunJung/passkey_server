@@ -1,0 +1,9 @@
+.gradle
+build
+.idea
+.vscode
+*.log
+.DS_Store
+*.iml
+docker-compose.yml
+.github

@@ -1,0 +1,32 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/passkey
+    username: app_runtime
+    password: change_me_local
+    hikari:
+      maximum-pool-size: 10
+      auto-commit: false
+
+  flyway:
+    url: jdbc:postgresql://localhost:5432/passkey
+    user: app_migrator
+    password: change_me_local
+    placeholders:
+      app_runtime_password: change_me_local
+      app_admin_password: change_me_admin
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+passkey:
+  admin:
+    enabled: false
+    datasource:
+      url: jdbc:postgresql://localhost:5432/passkey
+      username: app_admin
+      password: change_me_admin
+      hikari:
+        maximum-pool-size: 5
+        auto-commit: false

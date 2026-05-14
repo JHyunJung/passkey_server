@@ -1,0 +1,135 @@
+package com.crosscert.passkey.admin.security;
+
+import com.crosscert.passkey.admin.repository.AdminUserRepository;
+import com.crosscert.passkey.common.response.ApiResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+
+/**
+ * Three security chains:
+ *
+ * <ol>
+ *   <li>Order(1) — {@code /api/v1/admin/**}: form login + session cookie + CSRF token.
+ *   <li>Order(2) — {@code /api/v1/rp/**}: stateless, API key resolution handled by {@code
+ *       ApiKeyTenantResolver}/{@code TenantResolutionFilter}; Spring Security stays out of the way
+ *       (permit-all because the tenant filter already enforces the gate).
+ *   <li>Order(3) — everything else (actuator, /_diag, swagger, error): permitAll.
+ * </ol>
+ */
+@Configuration
+@RequiredArgsConstructor
+public class AdminSecurityConfig {
+
+  private final ObjectMapper objectMapper;
+
+  @Bean
+  public PasswordEncoder passwordEncoder() {
+    return new BCryptPasswordEncoder();
+  }
+
+  @Bean
+  @Order(1)
+  public SecurityFilterChain adminFilterChain(HttpSecurity http, AdminUserRepository adminRepo)
+      throws Exception {
+    return http.securityMatcher("/api/v1/admin/**")
+        .csrf(c -> c.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))
+        .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+        .authorizeHttpRequests(
+            authz ->
+                authz
+                    .requestMatchers("/api/v1/admin/auth/login")
+                    .permitAll()
+                    .anyRequest()
+                    .authenticated())
+        .formLogin(
+            form ->
+                form.loginProcessingUrl("/api/v1/admin/auth/login")
+                    .successHandler(new AdminAuthenticationSuccessHandler(adminRepo))
+                    .failureHandler(
+                        (req, res, ex) ->
+                            writeError(res, HttpStatus.UNAUTHORIZED, "A001", "Login failed")))
+        .logout(
+            logout ->
+                logout
+                    .logoutUrl("/api/v1/admin/auth/logout")
+                    .logoutRequestMatcher(
+                        new AntPathRequestMatcher("/api/v1/admin/auth/logout", "POST"))
+                    .logoutSuccessHandler(
+                        (req, res, auth) -> writeJson(res, HttpStatus.OK, "Logged out")))
+        .exceptionHandling(
+            ex ->
+                ex.authenticationEntryPoint(
+                        (req, res, e) ->
+                            writeError(
+                                res, HttpStatus.UNAUTHORIZED, "A010", "Admin login required"))
+                    .accessDeniedHandler(
+                        (req, res, e) ->
+                            writeError(res, HttpStatus.FORBIDDEN, "A002", "Access denied")))
+        .addFilterBefore(
+            new com.crosscert.passkey.admin.security.JsonLoginAuthenticationFilter(objectMapper),
+            UsernamePasswordAuthenticationFilter.class)
+        .build();
+  }
+
+  @Bean
+  @Order(2)
+  public SecurityFilterChain rpFilterChain(HttpSecurity http) throws Exception {
+    return http.securityMatcher("/api/v1/rp/**")
+        .csrf(AbstractHttpConfigurer::disable)
+        .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(authz -> authz.anyRequest().permitAll())
+        .build();
+  }
+
+  @Bean
+  @Order(3)
+  public SecurityFilterChain publicFilterChain(HttpSecurity http) throws Exception {
+    return http.securityMatcher(
+            "/actuator/**",
+            "/_diag/**",
+            "/v3/api-docs/**",
+            "/swagger-ui/**",
+            "/swagger-ui.html",
+            "/error")
+        .csrf(AbstractHttpConfigurer::disable)
+        .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(authz -> authz.anyRequest().permitAll())
+        .build();
+  }
+
+  private void writeJson(HttpServletResponse res, HttpStatus status, String msg)
+      throws java.io.IOException {
+    res.setStatus(status.value());
+    res.setContentType("application/json");
+    res.getWriter().write(objectMapper.writeValueAsString(ApiResponse.ok(msg, null)));
+  }
+
+  private void writeError(HttpServletResponse res, HttpStatus status, String code, String msg)
+      throws java.io.IOException {
+    res.setStatus(status.value());
+    res.setContentType("application/json");
+    String body =
+        "{\"success\":false,\"code\":\""
+            + code
+            + "\",\"message\":\""
+            + msg
+            + "\",\"error\":{\"errorCode\":\""
+            + code
+            + "\"}}";
+    res.getWriter().write(body);
+  }
+}
