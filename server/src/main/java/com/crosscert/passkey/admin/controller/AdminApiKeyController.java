@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/v1/admin/tenants/{tenantId}/api-keys")
 @RequiredArgsConstructor
@@ -105,6 +107,11 @@ public class AdminApiKeyController {
         Map.of());
     // Broadcast to peer instances so their Caffeine caches evict immediately.
     revocationPublisher.publish(k.getId());
+    log.info(
+        "admin.apikey.revoke adminId={} tenantId={} apiKeyId={}",
+        AdminAuthz.currentPrincipal().adminId(),
+        tenantId,
+        k.getId());
     return ApiResponse.ok();
   }
 }

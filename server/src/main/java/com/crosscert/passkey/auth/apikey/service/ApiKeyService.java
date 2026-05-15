@@ -15,9 +15,11 @@ import java.util.Base64;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ApiKeyService {
@@ -65,6 +67,12 @@ public class ApiKeyService {
       String plaintext = KEY_VERSION + "_" + prefix + "." + secret;
       String secretHash = argon2.hash(2, 65_536, 1, secret.toCharArray());
       ApiKey saved = repo.save(ApiKey.create(tenantId, prefix, secretHash, name));
+      log.info(
+          "apikey.issued tenantId={} apiKeyId={} prefix={} name={}",
+          tenantId,
+          saved.getId(),
+          prefix,
+          name);
       return new IssuedKey(saved.getId(), plaintext, prefix);
     }
     throw new BusinessException(
@@ -92,12 +100,14 @@ public class ApiKeyService {
     String secret = "x";
     if (presented == null || !presented.startsWith(KEY_VERSION + "_")) {
       argon2.verify(dummyHash, secret.toCharArray());
+      log.warn("apikey.verify.malformed reason=missing_or_bad_version");
       return Optional.empty();
     }
     String body = presented.substring(KEY_VERSION.length() + 1);
     int dot = body.indexOf('.');
     if (dot < 0) {
       argon2.verify(dummyHash, secret.toCharArray());
+      log.warn("apikey.verify.malformed reason=no_dot_separator");
       return Optional.empty();
     }
     String prefix = body.substring(0, dot);
@@ -106,17 +116,33 @@ public class ApiKeyService {
     Optional<ApiKey> found = repo.findByPrefix(prefix);
     if (found.isEmpty()) {
       argon2.verify(dummyHash, secret.toCharArray());
+      log.warn("apikey.verify.unknown_prefix prefix={}", prefix);
       return Optional.empty();
     }
     ApiKey k = found.get();
     if (!k.isActive()) {
       argon2.verify(dummyHash, secret.toCharArray());
+      log.warn(
+          "apikey.verify.revoked prefix={} apiKeyId={} tenantId={}",
+          prefix,
+          k.getId(),
+          k.getTenantId());
       throw new BusinessException(ErrorCode.INVALID_API_KEY);
     }
     if (!argon2.verify(k.getSecretHash(), secret.toCharArray())) {
+      log.warn(
+          "apikey.verify.secret_mismatch prefix={} apiKeyId={} tenantId={}",
+          prefix,
+          k.getId(),
+          k.getTenantId());
       return Optional.empty();
     }
     k.recordUse();
+    log.debug(
+        "apikey.verify.success prefix={} apiKeyId={} tenantId={}",
+        prefix,
+        k.getId(),
+        k.getTenantId());
     return Optional.of(new ResolvedKey(k.getTenantId(), k.getId()));
   }
 

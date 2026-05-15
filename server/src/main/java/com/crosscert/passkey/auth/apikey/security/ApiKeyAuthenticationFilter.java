@@ -46,9 +46,11 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
       ResolvedKey dummy = new ResolvedKey(preExisting.get().tenantId(), UUID.randomUUID());
       SecurityContextHolder.getContext()
           .setAuthentication(new ApiKeyAuthenticationToken(dummy, preExisting.get()));
+      MDC.put("apiKeyId", dummy.apiKeyId().toString());
       try {
         chain.doFilter(req, res);
       } finally {
+        MDC.remove("apiKeyId");
         SecurityContextHolder.clearContext();
       }
       return;
@@ -77,6 +79,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     TenantContext ctx = tenantOpt.get();
     TenantContextHolder.set(ctx);
     MDC.put("tenantId", ctx.tenantId().toString());
+    MDC.put("apiKeyId", resolved.get().apiKeyId().toString());
     SecurityContextHolder.getContext()
         .setAuthentication(new ApiKeyAuthenticationToken(resolved.get(), ctx));
     try {
@@ -84,6 +87,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     } finally {
       TenantContextHolder.clear();
       MDC.remove("tenantId");
+      MDC.remove("apiKeyId");
       SecurityContextHolder.clearContext();
     }
   }

@@ -9,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
@@ -16,6 +17,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * {@code register}, {@code authenticate}, and {@code admin-login} (the latter keyed by source IP to
  * defeat password brute force); everything else falls back to a generic limit.
  */
+@Slf4j
 @RequiredArgsConstructor
 public class RateLimitFilter extends OncePerRequestFilter {
 
@@ -40,6 +42,12 @@ public class RateLimitFilter extends OncePerRequestFilter {
     int limit = pickLimit(req.getRequestURI());
     String bucket = bucketKey(req);
     if (!limiter.tryAcquire(bucket, limit)) {
+      log.warn(
+          "ratelimit.exceeded bucket={} limit={} path={} ip={}",
+          bucket,
+          limit,
+          req.getRequestURI(),
+          req.getRemoteAddr());
       throw new BusinessException(ErrorCode.RATE_LIMIT_EXCEEDED);
     }
     chain.doFilter(req, res);

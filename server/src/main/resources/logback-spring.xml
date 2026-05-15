@@ -1,17 +1,78 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
+
+    <!-- Common MDC keys: traceId, tenantId, adminId, apiKeyId. Absent keys render as "-". -->
     <property name="LOG_PATTERN"
-              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-},%X{tenantId:-}] %logger{36} - %msg%n"/>
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-},%X{tenantId:-},%X{adminId:-},%X{apiKeyId:-}] %logger{36} - %msg%n"/>
 
-    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>${LOG_PATTERN}</pattern>
-        </encoder>
-    </appender>
+    <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
 
-    <root level="INFO">
-        <appender-ref ref="CONSOLE"/>
-    </root>
+    <!-- =========================================================
+         local / test / dev: human-readable console only
+         ========================================================= -->
+    <springProfile name="!prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${LOG_PATTERN}</pattern>
+            </encoder>
+        </appender>
 
-    <logger name="com.crosscert.passkey" level="DEBUG"/>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+
+        <logger name="com.crosscert.passkey" level="DEBUG"/>
+    </springProfile>
+
+    <!-- =========================================================
+         prod: JSON to stdout (LB/k8s log collection) + rolling file backup, both wrapped in Async
+         ========================================================= -->
+    <springProfile name="prod">
+        <!-- LogstashEncoder-style JSON without the extra dependency: use pattern with mdc/key fields. -->
+        <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+                <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%logger{40}","thread":"%thread","traceId":"%X{traceId:-}","tenantId":"%X{tenantId:-}","adminId":"%X{adminId:-}","apiKeyId":"%X{apiKeyId:-}","msg":"%replace(%msg){'\"','\\\"'}"%n%nopex,"ex":"%replace(%xException){'[\\r\\n]+','\\\\n'}"}%n</pattern>
+            </encoder>
+        </appender>
+
+        <appender name="ROLLING_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>${LOG_DIR}/passkey-server.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>${LOG_DIR}/passkey-server.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+                <maxFileSize>100MB</maxFileSize>
+                <maxHistory>14</maxHistory>
+                <totalSizeCap>5GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder>
+                <pattern>${LOG_PATTERN}</pattern>
+            </encoder>
+        </appender>
+
+        <appender name="ASYNC_CONSOLE_JSON" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="CONSOLE_JSON"/>
+            <queueSize>1024</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>true</neverBlock>
+            <includeCallerData>false</includeCallerData>
+        </appender>
+
+        <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="ROLLING_FILE"/>
+            <queueSize>1024</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>true</neverBlock>
+            <includeCallerData>false</includeCallerData>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC_CONSOLE_JSON"/>
+            <appender-ref ref="ASYNC_FILE"/>
+        </root>
+
+        <logger name="com.crosscert.passkey" level="INFO"/>
+        <!-- Quiet noisy infra in prod -->
+        <logger name="org.hibernate.SQL" level="WARN"/>
+        <logger name="org.hibernate.orm.jdbc.bind" level="WARN"/>
+    </springProfile>
+
 </configuration>

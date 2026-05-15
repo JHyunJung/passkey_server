@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import javax.sql.DataSource;
+import lombok.extern.slf4j.Slf4j;
 import org.hibernate.engine.jdbc.connections.spi.MultiTenantConnectionProvider;
 import org.springframework.stereotype.Component;
 
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Component;
  * passkey.current_tenant_id()} helper then returns NULL, yielding zero rows under RLS
  * (fail-closed).
  */
+@Slf4j
 @Component
 public class TenantConnectionProvider implements MultiTenantConnectionProvider<String> {
 
@@ -44,6 +46,11 @@ public class TenantConnectionProvider implements MultiTenantConnectionProvider<S
     try (PreparedStatement ps = connection.prepareStatement(SET_TENANT_SQL)) {
       ps.setString(1, tenantIdentifier); // null is OK — fail-closed
       ps.execute();
+    }
+    if (tenantIdentifier == null || tenantIdentifier.isEmpty()) {
+      log.debug("rls.context.unset tenant=fail-closed");
+    } else if (log.isTraceEnabled()) {
+      log.trace("rls.context.set tenantId={}", tenantIdentifier);
     }
     return connection;
   }

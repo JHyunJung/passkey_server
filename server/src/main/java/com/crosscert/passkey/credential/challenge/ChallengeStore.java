@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Component;
  * Redis-backed challenge store. Keys are scoped per-tenant + per-ceremony-id. TTL of 5 minutes
  * matches typical authenticator UX timeouts.
  */
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class ChallengeStore {
@@ -46,6 +48,11 @@ public class ChallengeStore {
       throw new BusinessException(
           ErrorCode.INTERNAL_SERVER_ERROR, "failed to serialise challenge record", e);
     }
+    log.debug(
+        "challenge.save tenantId={} ceremonyId={} type={}",
+        record.tenantId(),
+        ceremonyId,
+        record.ceremonyType());
     return ceremonyId;
   }
 
@@ -54,6 +61,7 @@ public class ChallengeStore {
     String key = buildKey(tenantId, ceremonyId);
     String json = redis.execute(CONSUME_SCRIPT, List.of(key));
     if (json == null) {
+      log.debug("challenge.consume.miss tenantId={} ceremonyId={}", tenantId, ceremonyId);
       return Optional.empty();
     }
     try {

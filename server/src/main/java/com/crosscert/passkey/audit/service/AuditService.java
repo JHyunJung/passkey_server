@@ -82,6 +82,15 @@ public class AuditService {
             prevHash.isEmpty() ? null : prevHash,
             rowHash);
     repo.save(entry);
+    log.debug(
+        "audit.append tenantId={} event={} actor={}:{} subject={}:{} entryId={}",
+        tenantId,
+        eventType,
+        actorType,
+        actorId,
+        subjectType,
+        subjectId,
+        entry.getId());
   }
 
   private static String sha256(String input) {

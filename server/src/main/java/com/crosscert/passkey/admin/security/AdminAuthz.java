@@ -5,8 +5,10 @@ import com.crosscert.passkey.common.exception.ErrorCode;
 import com.crosscert.passkey.tenant.context.TenantContext;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import java.util.UUID;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+@Slf4j
 public final class AdminAuthz {
 
   private AdminAuthz() {}
@@ -28,6 +30,12 @@ public final class AdminAuthz {
     AdminPrincipal admin = currentPrincipal();
     if (!admin.isPlatformOperator()) {
       if (admin.tenantId() == null || !admin.tenantId().equals(pathTenantId)) {
+        log.warn(
+            "admin.authz.denied adminId={} role={} adminTenantId={} requestedTenantId={}",
+            admin.adminId(),
+            admin.role(),
+            admin.tenantId(),
+            pathTenantId);
         throw new BusinessException(ErrorCode.ADMIN_ROLE_FORBIDDEN);
       }
     }
@@ -37,6 +45,10 @@ public final class AdminAuthz {
   public static void requirePlatformOperator() {
     AdminPrincipal admin = currentPrincipal();
     if (!admin.isPlatformOperator()) {
+      log.warn(
+          "admin.authz.denied adminId={} role={} reason=platform_operator_required",
+          admin.adminId(),
+          admin.role());
       throw new BusinessException(ErrorCode.ADMIN_ROLE_FORBIDDEN);
     }
   }

@@ -13,10 +13,12 @@ import com.crosscert.passkey.tenant.repository.TenantRepository;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AdminTenantService {
@@ -55,6 +57,7 @@ public class AdminTenantService {
     } finally {
       TenantContextHolder.clear();
     }
+    log.info("admin.tenant.created tenantId={} slug={} name={}", saved.getId(), slug, name);
     return TenantView.from(saved);
   }
 

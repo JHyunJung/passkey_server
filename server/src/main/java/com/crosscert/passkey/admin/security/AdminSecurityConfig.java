@@ -8,6 +8,7 @@ import com.crosscert.passkey.tenant.service.TenantQueryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -33,6 +34,7 @@ import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
  *   <li>Order(3) — everything else (actuator, /_diag, swagger, error): permitAll.
  * </ol>
  */
+@Slf4j
 @Configuration
 @RequiredArgsConstructor
 public class AdminSecurityConfig {
@@ -63,8 +65,14 @@ public class AdminSecurityConfig {
                 form.loginProcessingUrl("/api/v1/admin/auth/login")
                     .successHandler(new AdminAuthenticationSuccessHandler(adminRepo))
                     .failureHandler(
-                        (req, res, ex) ->
-                            writeError(res, HttpStatus.UNAUTHORIZED, "A001", "Login failed")))
+                        (req, res, ex) -> {
+                          log.warn(
+                              "admin.login.failure email={} ip={} reason={}",
+                              sanitiseEmail(req.getParameter("username")),
+                              req.getRemoteAddr(),
+                              ex.getClass().getSimpleName());
+                          writeError(res, HttpStatus.UNAUTHORIZED, "A001", "Login failed");
+                        }))
         .logout(
             logout ->
                 logout
@@ -76,15 +84,26 @@ public class AdminSecurityConfig {
         .exceptionHandling(
             ex ->
                 ex.authenticationEntryPoint(
-                        (req, res, e) ->
-                            writeError(
-                                res, HttpStatus.UNAUTHORIZED, "A010", "Admin login required"))
+                        (req, res, e) -> {
+                          log.warn(
+                              "admin.unauthenticated path={} ip={}",
+                              req.getRequestURI(),
+                              req.getRemoteAddr());
+                          writeError(res, HttpStatus.UNAUTHORIZED, "A010", "Admin login required");
+                        })
                     .accessDeniedHandler(
-                        (req, res, e) ->
-                            writeError(res, HttpStatus.FORBIDDEN, "A002", "Access denied")))
+                        (req, res, e) -> {
+                          log.warn(
+                              "admin.access_denied path={} ip={} reason={}",
+                              req.getRequestURI(),
+                              req.getRemoteAddr(),
+                              e.getMessage());
+                          writeError(res, HttpStatus.FORBIDDEN, "A002", "Access denied");
+                        }))
         .addFilterBefore(
             new com.crosscert.passkey.admin.security.JsonLoginAuthenticationFilter(objectMapper),
             UsernamePasswordAuthenticationFilter.class)
+        .addFilterAfter(new AdminMdcFilter(), UsernamePasswordAuthenticationFilter.class)
         .build();
   }
 
@@ -103,9 +122,14 @@ public class AdminSecurityConfig {
         .exceptionHandling(
             ex ->
                 ex.authenticationEntryPoint(
-                    (req, res, e) ->
-                        writeError(
-                            res, HttpStatus.UNAUTHORIZED, "A005", "Invalid or missing API key")))
+                    (req, res, e) -> {
+                      log.warn(
+                          "rp.unauthorized path={} ip={}",
+                          req.getRequestURI(),
+                          req.getRemoteAddr());
+                      writeError(
+                          res, HttpStatus.UNAUTHORIZED, "A005", "Invalid or missing API key");
+                    }))
         .build();
   }
 
@@ -149,6 +173,22 @@ public class AdminSecurityConfig {
     res.setStatus(status.value());
     res.setContentType("application/json");
     res.getWriter().write(objectMapper.writeValueAsString(ApiResponse.ok(msg, null)));
+  }
+
+  /**
+   * Masks the local-part of an email for safer logging — keeps domain visible for grouping by
+   * tenant/RP while not exposing full PII in operational logs.
+   */
+  private String sanitiseEmail(String email) {
+    if (email == null || email.isBlank()) {
+      return "-";
+    }
+    String stripped = email.replace('\n', '_').replace('\r', '_');
+    int at = stripped.indexOf('@');
+    if (at <= 1) {
+      return "***" + stripped.substring(Math.max(0, at));
+    }
+    return stripped.charAt(0) + "***" + stripped.substring(at);
   }
 
   private void writeError(HttpServletResponse res, HttpStatus status, String code, String msg)

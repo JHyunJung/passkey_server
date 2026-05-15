@@ -7,6 +7,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -17,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
  * Replaces the post-login {@code Authentication} with one whose principal is an {@link
  * AdminPrincipal} carrying tenantId + role. Also records login time.
  */
+@Slf4j
 @RequiredArgsConstructor
 public class AdminAuthenticationSuccessHandler implements AuthenticationSuccessHandler {
 
@@ -43,6 +46,15 @@ public class AdminAuthenticationSuccessHandler implements AuthenticationSuccessH
     Authentication enriched =
         new UsernamePasswordAuthenticationToken(principal, "", principal.getAuthorities());
     SecurityContextHolder.getContext().setAuthentication(enriched);
+    MDC.put("adminId", admin.getId().toString());
+
+    log.info(
+        "admin.login.success adminId={} email={} role={} tenantId={} ip={}",
+        admin.getId(),
+        admin.getEmail(),
+        admin.getRole(),
+        admin.getTenantId(),
+        request.getRemoteAddr());
 
     response.setStatus(HttpServletResponse.SC_OK);
     response.setContentType("application/json");

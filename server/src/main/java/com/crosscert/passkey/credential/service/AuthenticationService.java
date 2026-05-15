@@ -95,6 +95,13 @@ public class AuthenticationService {
             challengeB64u, cfg.getTenantId(), tenantUserId, CeremonyType.AUTHENTICATION, null);
     UUID ceremonyId = challengeStore.save(stored);
 
+    log.info(
+        "auth.begin tenantId={} tenantUserId={} ceremonyId={} allowCredentials={}",
+        cfg.getTenantId(),
+        tenantUserId,
+        ceremonyId,
+        allowCredentials.size());
+
     return new AuthenticationOptionsResponse(
         ceremonyId,
         challengeB64u,
@@ -128,6 +135,14 @@ public class AuthenticationService {
         credential.getId().toString(),
         java.util.Map.of("credentialId", credential.getCredentialId(), "newCounter", newCounter));
     metrics.getAuthenticationSuccess().increment();
+
+    log.info(
+        "auth.success tenantId={} tenantUserId={} credentialDbId={} credentialId={} newCounter={}",
+        cfg.getTenantId(),
+        user.getId(),
+        credential.getId(),
+        credential.getCredentialId(),
+        newCounter);
 
     return new AuthenticationResult(
         credential.getId(),
@@ -198,7 +213,8 @@ public class AuthenticationService {
       return authnData;
     } catch (DataConversionException | VerificationException e) {
       log.warn(
-          "Assertion verification failed for credential {}: {}",
+          "auth.assertion.invalid tenantId={} credentialId={} reason={}",
+          cfg.getTenantId(),
           sanitiseForLog(req.credentialId()),
           sanitiseForLog(e.getMessage()));
       metrics.getAuthenticationFailure().increment();
@@ -211,6 +227,14 @@ public class AuthenticationService {
       credential.updateSignatureCounter(newCounter);
     } catch (BusinessException e) {
       if (e.getErrorCode() == ErrorCode.SIGNATURE_COUNTER_REGRESSION) {
+        log.error(
+            "auth.signature_counter.regression tenantId={} tenantUserId={} credentialId={} "
+                + "storedCounter={} newCounter={}",
+            credential.getTenantId(),
+            credential.getTenantUserId(),
+            credential.getCredentialId(),
+            credential.getSignatureCounter(),
+            newCounter);
         auditService.append(
             AuditEventType.SIGNATURE_COUNTER_REGRESSION,
             ActorType.END_USER,

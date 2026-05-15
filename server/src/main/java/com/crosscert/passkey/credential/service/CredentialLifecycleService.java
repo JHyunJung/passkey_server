@@ -14,9 +14,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class CredentialLifecycleService {
@@ -50,6 +52,11 @@ public class CredentialLifecycleService {
         "CREDENTIAL",
         c.getId().toString(),
         Map.of("nickname", nickname == null ? "" : nickname));
+    log.info(
+        "credential.rename tenantId={} tenantUserId={} credentialDbId={}",
+        c.getTenantId(),
+        c.getTenantUserId(),
+        c.getId());
     return CredentialView.from(c);
   }
 
@@ -67,5 +74,10 @@ public class CredentialLifecycleService {
         "CREDENTIAL",
         c.getId().toString(),
         Map.of());
+    log.info(
+        "credential.revoke tenantId={} tenantUserId={} credentialDbId={}",
+        c.getTenantId(),
+        c.getTenantUserId(),
+        c.getId());
   }
 }

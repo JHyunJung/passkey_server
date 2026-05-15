@@ -37,9 +37,11 @@ public class ApiKeyRevocationListenerConfig {
     public void handleMessage(byte[] message) {
       String s = new String(message, StandardCharsets.UTF_8);
       try {
-        apiKeyService.evictByApiKeyId(UUID.fromString(s));
+        UUID apiKeyId = UUID.fromString(s);
+        apiKeyService.evictByApiKeyId(apiKeyId);
+        log.debug("apikey.revocation.received apiKeyId={}", apiKeyId);
       } catch (IllegalArgumentException e) {
-        log.warn("ignoring malformed revocation payload: {}", s);
+        log.warn("apikey.revocation.malformed payload={}", s);
       }
     }
   }

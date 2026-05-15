@@ -82,6 +82,13 @@ public class RegistrationService {
             challengeB64u, cfg.getTenantId(), user.getId(), CeremonyType.REGISTRATION, userHandle);
     UUID ceremonyId = challengeStore.save(record);
 
+    log.info(
+        "register.begin tenantId={} tenantUserId={} externalUserId={} ceremonyId={}",
+        cfg.getTenantId(),
+        user.getId(),
+        externalUserId,
+        ceremonyId);
+
     return new RegistrationOptionsResponse(
         ceremonyId,
         challengeB64u,
@@ -128,7 +135,11 @@ public class RegistrationService {
       regData = webAuthnManager.parse(registrationRequest);
       webAuthnManager.verify(regData, params);
     } catch (DataConversionException | VerificationException e) {
-      log.warn("Attestation verification failed: {}", e.getMessage());
+      log.warn(
+          "register.attestation.invalid tenantId={} tenantUserId={} reason={}",
+          cfg.getTenantId(),
+          stored.tenantUserId(),
+          e.getMessage());
       metrics.getRegistrationFailure().increment();
       throw new BusinessException(ErrorCode.ATTESTATION_INVALID, e.getMessage());
     }
@@ -144,6 +155,13 @@ public class RegistrationService {
             .orElseGet(
                 () -> policyRepo.save(TenantAttestationPolicy.permissive(cfg.getTenantId())));
     if (!policy.accepts(aaguid)) {
+      log.warn(
+          "register.aaguid.rejected tenantId={} tenantUserId={} aaguid={} policyMode={}",
+          cfg.getTenantId(),
+          stored.tenantUserId(),
+          aaguid,
+          policy.getMode());
+      metrics.getRegistrationFailure().increment();
       throw new BusinessException(ErrorCode.AAGUID_NOT_ALLOWED);
     }
 
@@ -184,6 +202,14 @@ public class RegistrationService {
             "aaguid",
             aaguid == null ? "" : aaguid.toString()));
     metrics.getRegistrationSuccess().increment();
+
+    log.info(
+        "register.success tenantId={} tenantUserId={} credentialDbId={} credentialId={} aaguid={}",
+        cfg.getTenantId(),
+        stored.tenantUserId(),
+        saved.getId(),
+        saved.getCredentialId(),
+        aaguid);
 
     return new RegistrationResult(
         saved.getId(), saved.getCredentialId(), aaguid == null ? null : aaguid.toString());

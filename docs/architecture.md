@@ -576,6 +576,41 @@ ArchUnit 1.3.0                           패키지 경계 검증
 | JWT secret 검증 | ✅ (모든 profile) | ✅ | ✅ | ✅ fail-fast |
 | Swagger UI | ✅ | n/a | ✅ | ❌ 권고 (LB에서 차단) |
 
+### 8.1 로깅
+
+**MDC 키 4종**:
+
+| 키 | 주입 시점 | 설명 |
+|----|----------|------|
+| `traceId` | `TraceIdFilter` (HIGHEST) | X-Trace-Id echo 또는 UUID16 신규 발급. 모든 로그 라인에 포함 |
+| `tenantId` | `TenantResolutionFilter`(dev) / `ApiKeyAuthenticationFilter`(prod) | RP 요청 식별 |
+| `adminId` | `AdminAuthenticationSuccessHandler` (login) + `AdminMdcFilter` (요청 단위 재주입) | 어드민 활동 추적 |
+| `apiKeyId` | `ApiKeyAuthenticationFilter` | RP API key 호출 추적 — revoke 시 grep 키 |
+
+로그 패턴: `[%X{traceId:-},%X{tenantId:-},%X{adminId:-},%X{apiKeyId:-}]`
+
+**로그 컨벤션** (dot-notation prefix, JSON에서도 grep 친화적):
+- `register.begin`, `register.success`, `register.attestation.invalid`, `register.aaguid.rejected`
+- `auth.begin`, `auth.success`, `auth.assertion.invalid`, `auth.signature_counter.regression`
+- `apikey.verify.{success,malformed,unknown_prefix,revoked,secret_mismatch}`, `apikey.issued`, `apikey.revocation.{published,received,malformed}`
+- `admin.login.{success,failure}`, `admin.unauthenticated`, `admin.access_denied`, `admin.tenant.created`, `admin.apikey.revoke`, `authz.denied`
+- `rp.unauthorized`, `ratelimit.exceeded`
+- `challenge.{save,consume.miss}`, `audit.append`, `credential.{rename,revoke}`
+- `rls.context.{set,unset}` (TRACE / DEBUG)
+
+**레벨 정책**:
+- `ERROR` — 무결성 위협 의심 (`auth.signature_counter.regression` → FIDO2 clone 가능성)
+- `WARN` — 보안 이벤트 (로그인 실패, authz denied, ratelimit 초과, attestation invalid)
+- `INFO` — 정상 흐름 핵심 (register/auth begin & success, admin 작업, apikey 발급)
+- `DEBUG` — 진단 (challenge save, audit.append, apikey.verify.success, RLS context)
+- `TRACE` — RLS tenant set per-tx (대량, prod에서 항상 OFF)
+
+**profile별 appender** (`logback-spring.xml`):
+- `!prod` (local/test/dev): Console만, `com.crosscert.passkey` DEBUG
+- `prod`: Async wrapper로 (1) JSON stdout (k8s/LB 수집용) + (2) RollingFile `logs/passkey-server.log` (100MB×14일, totalSizeCap 5GB, gzip), root INFO, Hibernate SQL WARN
+
+**PII 마스킹**: email은 `sanitiseEmail()` (a***@domain.com), 입력 echo는 `\r\n` 치환 (log injection 방어).
+
 ---
 
 ## 9. 추가 자료
@@ -601,3 +636,4 @@ OpenAPI spec은 서버 부팅 후:
 |------|----------------|----------|
 | 2026-05-15 | M1~M5 초기 | 멀티테넌트 RLS, WebAuthn 코어, JWT, RP API key, audit log, admin REST API, JS SDK |
 | 2026-05-15 | Hardening Waves 1~5 | audit chain advisory lock, ApiKeyAuthenticationFilter, JWT typ 검증, prefix collision retry + timing 평탄화, admin upsert 실제 반영, findAll → paged tenant-scoped, Spring Session Redis, actuator chain 분기, Caffeine 캐시 + Redis pub/sub, 도메인 invariant 단위 테스트, V9 funnel index, admin login dedicated rate-limit, log injection 방어 |
+| 2026-05-15 | Observability | 보안/흐름/외부의존성 로그 보강 (`@Slf4j` 14개 확장), MDC 4종 (`traceId/tenantId/adminId/apiKeyId`) — `AdminMdcFilter` + `ApiKeyAuthenticationFilter` 주입, prod logback profile (Async + JSON + RollingFile), §8.1 로깅 컨벤션 문서화 |
