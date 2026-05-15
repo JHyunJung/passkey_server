@@ -54,6 +54,11 @@ public enum ErrorCode {
   CREDENTIAL_REVOKED(HttpStatus.UNAUTHORIZED, "P007", "Credential is revoked"),
   AAGUID_NOT_ALLOWED(HttpStatus.FORBIDDEN, "P008", "Authenticator AAGUID not allowed"),
   ORIGIN_NOT_ALLOWED(HttpStatus.BAD_REQUEST, "P009", "Origin not in tenant allowlist"),
+  MDS_TRUST_FAILED(HttpStatus.FORBIDDEN, "P010", "Attestation trust chain validation failed"),
+  MDS_UNAVAILABLE(
+      HttpStatus.SERVICE_UNAVAILABLE, "P011", "MDS service unavailable for strict tenant"),
+  AUTHENTICATOR_REVOKED(
+      HttpStatus.FORBIDDEN, "P012", "Authenticator has been revoked or compromised"),
 
   // ---------- Rate-limit (R) — M3 ----------
   RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "R001", "Rate limit exceeded"),

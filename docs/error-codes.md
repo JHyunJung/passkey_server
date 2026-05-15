@@ -72,6 +72,9 @@
 | `P007` | 401 | Credential is revoked | 삭제된 자격증명으로 인증 시도 |
 | `P008` | 403 | Authenticator AAGUID not allowed | tenant attestation policy의 allowlist 확인 |
 | `P009` | 400 | Origin not in tenant allowlist | 콘솔에서 origin 추가 또는 호출 origin 수정 |
+| `P010` | 403 | Attestation trust chain validation failed | strict tenant — authenticator AAGUID가 MDS BLOB에 없음. 해당 키 차단 또는 BLOB refresh 후 재시도 |
+| `P011` | 503 | MDS service unavailable for strict tenant | 서버 `passkey.mds.enabled=false` 또는 BLOB 첫 fetch 실패. `/_diag/mds-status` 확인 후 인프라 점검 |
+| `P012` | 403 | Authenticator has been revoked or compromised | FIDO StatusReport REVOKED/COMPROMISED. **사용자에게 즉시 폐기 + 재등록 안내** |
 
 ### Rate-limit (R)
 | Code | HTTP | Message |

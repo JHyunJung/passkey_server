@@ -51,3 +51,12 @@ passkey:
     registration-per-minute: 30
     authentication-per-minute: 60
     default-per-minute: 120
+  mds:
+    # FIDO MDS3 integration. Disabled by default; ops must (1) mount the FIDO Alliance Global Root
+    # CA at root-certificate-path, (2) flip PASSKEY_MDS_ENABLED=true. Strict tenants
+    # (TenantAttestationPolicy.mdsStrict=true) require this to be enabled.
+    enabled: ${PASSKEY_MDS_ENABLED:false}
+    blob-url: ${PASSKEY_MDS_BLOB_URL:https://mds3.fidoalliance.org/}
+    root-certificate-path: ${PASSKEY_MDS_ROOT_CA:classpath:fido/Global_Sign_Root_CA.pem}
+    refresh-cron: ${PASSKEY_MDS_REFRESH_CRON:0 0 4 * * *}
+    allow-not-fido-certified: ${PASSKEY_MDS_ALLOW_NON_CERTIFIED:true}

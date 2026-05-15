@@ -51,3 +51,11 @@ passkey:
   actuator:
     username: ${PASSKEY_ACTUATOR_USER:actuator}
     password: ${PASSKEY_ACTUATOR_PASSWORD}
+  mds:
+    enabled: ${PASSKEY_MDS_ENABLED:false}
+    blob-url: ${PASSKEY_MDS_BLOB_URL:https://mds3.fidoalliance.org/}
+    # Operators must mount the FIDO Alliance Global Root CA PEM at this path (k8s secret /
+    # configmap). Without it the BLOB JWT cannot be verified and strict tenants will fail-closed.
+    root-certificate-path: ${PASSKEY_MDS_ROOT_CA:file:/etc/passkey/fido/Global_Sign_Root_CA.pem}
+    refresh-cron: ${PASSKEY_MDS_REFRESH_CRON:0 0 4 * * *}
+    allow-not-fido-certified: ${PASSKEY_MDS_ALLOW_NON_CERTIFIED:true}

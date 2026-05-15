@@ -25,15 +25,22 @@ public class AdminAttestationPolicyController {
 
   private final TenantAttestationPolicyRepository repo;
 
-  public record PolicyView(String mode, List<String> allowed, List<String> denied) {
+  public record PolicyView(
+      String mode, List<String> allowed, List<String> denied, boolean mdsStrict) {
     static PolicyView from(TenantAttestationPolicy p) {
       return new PolicyView(
-          p.getMode().name(), csvOrEmpty(p.getAllowedAaguids()), csvOrEmpty(p.getDeniedAaguids()));
+          p.getMode().name(),
+          csvOrEmpty(p.getAllowedAaguids()),
+          csvOrEmpty(p.getDeniedAaguids()),
+          p.isMdsStrict());
     }
   }
 
   public record UpsertRequest(
-      @NotBlank String mode, List<String> allowedAaguids, List<String> deniedAaguids) {}
+      @NotBlank String mode,
+      List<String> allowedAaguids,
+      List<String> deniedAaguids,
+      Boolean mdsStrict) {}
 
   @GetMapping
   @Transactional(readOnly = true)
@@ -54,7 +61,8 @@ public class AdminAttestationPolicyController {
     TenantAttestationPolicy policy =
         repo.findByTenantId(tenantId)
             .orElseGet(() -> repo.save(TenantAttestationPolicy.permissive(tenantId)));
-    policy.update(mode, req.allowedAaguids(), req.deniedAaguids());
+    boolean mdsStrict = req.mdsStrict() != null && req.mdsStrict();
+    policy.update(mode, req.allowedAaguids(), req.deniedAaguids(), mdsStrict);
     return ApiResponse.ok(PolicyView.from(policy));
   }
 

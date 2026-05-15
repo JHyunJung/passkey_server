@@ -597,6 +597,7 @@ ArchUnit 1.3.0                           패키지 경계 검증
 - `rp.unauthorized`, `ratelimit.exceeded`
 - `challenge.{save,consume.miss}`, `audit.append`, `credential.{rename,revoke}`
 - `rls.context.{set,unset}` (TRACE / DEBUG)
+- `mds.{provider.constructed,refresh.success,scheduled.refresh.failed,warmup.failed}`, `register.{mds.strict.engaged,mds.unavailable,mds.trust_failed,authenticator.revoked}`
 
 **레벨 정책**:
 - `ERROR` — 무결성 위협 의심 (`auth.signature_counter.regression` → FIDO2 clone 가능성)
@@ -630,10 +631,79 @@ OpenAPI spec은 서버 부팅 후:
 
 ---
 
-## 10. 변경 이력
+## 10. FIDO MDS3 통합
+
+### 10.1 개요
+
+기본 동작은 webauthn4j non-strict — attestation cert chain 검증 안 함, AAGUID allow/deny 정책만으로 약식 통제. 위조 하드웨어 키, compromised authenticator를 직접 차단하지는 못함.
+
+**MDS3 통합 후** (`passkey.mds.enabled=true` + tenant `mdsStrict=true`):
+- 등록 시 FIDO Alliance가 서명한 metadata BLOB의 trust anchor로 attestation cert chain 검증
+- BLOB의 `StatusReport`가 `REVOKED`, `ATTESTATION_KEY_COMPROMISE`, `USER_VERIFICATION_BYPASS` 등 critical 상태인 authenticator는 자동 거절
+- `NOT_FIDO_CERTIFIED`는 정책으로 toggle (`passkey.mds.allow-not-fido-certified`, 기본 true — 비인증 통과 + WARN 로그)
+
+### 10.2 BLOB 라이프사이클
+
+```
+1. boot                        MdsBlobProvider.@PostConstruct warmUp()
+                                 └→ FidoMDS3MetadataBLOBProvider.refresh()
+                                      └→ HTTPS GET https://mds3.fidoalliance.org/
+                                      └→ JWT signature verify (FIDO Global Root CA)
+                                      └→ parse → MetadataBLOB.entries
+2. every 04:00 (cron)          MdsRefreshScheduler.scheduledRefresh()
+3. register flow (strict 시)   MetadataBLOBBasedTrustAnchorRepository.find(aaguid)
+                                 └→ provider.provide() → current BLOB의 entry
+                                 └→ entry.statusReports critical → BadStatusException → AUTHENTICATOR_REVOKED
+                                 └→ entry 없음 → TrustAnchorNotFoundException → MDS_TRUST_FAILED
+                                 └→ trust anchor 반환 → DefaultCertPathTrustworthinessVerifier가 cert chain 검증
+```
+
+**Fail mode**:
+- BLOB 한 번도 fetch 못 함 + strict tenant: `MDS_UNAVAILABLE` (503)
+- BLOB은 있지만 scheduled refresh 실패: stale BLOB 유지 (fail-open) — last-known-good으로 운영 지속
+- Root CA PEM 부재: 부팅 시 `IllegalStateException` (fail-closed)
+
+### 10.3 tenant strict 활성화
+
+`tenant_attestation_policy.mds_strict` (V10, BOOLEAN DEFAULT FALSE) admin API:
+```
+PUT /api/v1/admin/tenants/{tenantId}/attestation-policy
+{
+  "mode": "ANY",
+  "allowedAaguids": [],
+  "deniedAaguids": [],
+  "mdsStrict": true
+}
+```
+
+strict on이지만 서버 `passkey.mds.enabled=false`면 해당 tenant의 register 요청은 `P011 MDS_UNAVAILABLE`로 즉시 실패. RP가 준비된 후 점진 전환 가능 (다른 tenant에 영향 없음).
+
+### 10.4 운영 체크리스트
+
+| 항목 | 확인 방법 |
+|------|----------|
+| Root CA PEM 배포 | `passkey.mds.root-certificate-path`가 가리키는 파일 존재 + `openssl x509 -text -noout`으로 subject 확인 |
+| BLOB 첫 fetch | `GET /_diag/mds-status` → `status: READY` + `entryCount > 0` |
+| 매일 refresh | `mds.refresh.success` 로그 1회/일 + `lastFetched` 24h 이내 |
+| Refresh 실패 alert | `mds.scheduled.refresh.failed` ERROR 로그 → Prometheus alert rule |
+| Strict tenant 거절 분포 | audit log `ATTESTATION_TRUST_FAILED` 집계 — 정상 사용자 거절 시 정책 재검토 |
+
+### 10.5 운영 모드 차이 (§8 표 보완)
+
+| 항목 | local | test | dev | prod |
+|------|-------|------|-----|------|
+| `passkey.mds.enabled` | false (env) | false | env | env (false 권장 초기, RP 준비 후 true) |
+| `MdsBlobProvider` 빈 | 조건부 | 조건부 | 조건부 | 조건부 |
+| `MdsRefreshScheduler` cron | 04:00 | n/a | 04:00 | 04:00 |
+| `strictWebAuthnManager` 빈 | enabled true 시 | n/a | enabled true 시 | enabled true 시 |
+
+---
+
+## 11. 변경 이력
 
 | 일자 | 마일스톤 / wave | 주요 변경 |
 |------|----------------|----------|
 | 2026-05-15 | M1~M5 초기 | 멀티테넌트 RLS, WebAuthn 코어, JWT, RP API key, audit log, admin REST API, JS SDK |
 | 2026-05-15 | Hardening Waves 1~5 | audit chain advisory lock, ApiKeyAuthenticationFilter, JWT typ 검증, prefix collision retry + timing 평탄화, admin upsert 실제 반영, findAll → paged tenant-scoped, Spring Session Redis, actuator chain 분기, Caffeine 캐시 + Redis pub/sub, 도메인 invariant 단위 테스트, V9 funnel index, admin login dedicated rate-limit, log injection 방어 |
 | 2026-05-15 | Observability | 보안/흐름/외부의존성 로그 보강 (`@Slf4j` 14개 확장), MDC 4종 (`traceId/tenantId/adminId/apiKeyId`) — `AdminMdcFilter` + `ApiKeyAuthenticationFilter` 주입, prod logback profile (Async + JSON + RollingFile), §8.1 로깅 컨벤션 문서화 |
+| 2026-05-15 | FIDO MDS3 통합 | `credential.metadata` 패키지 신설 (`MdsBlobProvider` + `MdsRefreshScheduler` + `MdsTrustAnchorRepositoryConfig`), `webauthn4j-metadata:0.27` 의존성, V10 `tenant_attestation_policy.mds_strict` 컬럼, strict `WebAuthnManager` 빈 + `RegistrationService` 분기, ErrorCode 3종(P010 `MDS_TRUST_FAILED`, P011 `MDS_UNAVAILABLE`, P012 `AUTHENTICATOR_REVOKED`) + audit event `ATTESTATION_TRUST_FAILED`, `/_diag/mds-status` |

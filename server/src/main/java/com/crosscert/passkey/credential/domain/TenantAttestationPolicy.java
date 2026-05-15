@@ -31,17 +31,31 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
   @Column(name = "denied_aaguids")
   private String deniedAaguids;
 
+  /**
+   * When true, register flow uses the strict {@code WebAuthnManager} backed by FIDO MDS3 trust
+   * anchors. Requires server-side {@code passkey.mds.enabled=true}; otherwise registration fails
+   * with {@code MDS_UNAVAILABLE}.
+   */
+  @Column(name = "mds_strict", nullable = false)
+  private boolean mdsStrict;
+
   private TenantAttestationPolicy(
-      UUID id, UUID tenantId, AttestationMode mode, String allowed, String denied) {
+      UUID id,
+      UUID tenantId,
+      AttestationMode mode,
+      String allowed,
+      String denied,
+      boolean mdsStrict) {
     super(id, tenantId);
     this.mode = mode;
     this.allowedAaguids = allowed;
     this.deniedAaguids = denied;
+    this.mdsStrict = mdsStrict;
   }
 
   public static TenantAttestationPolicy permissive(UUID tenantId) {
     return new TenantAttestationPolicy(
-        UUID.randomUUID(), tenantId, AttestationMode.ANY, null, null);
+        UUID.randomUUID(), tenantId, AttestationMode.ANY, null, null, false);
   }
 
   public boolean accepts(UUID aaguid) {
@@ -70,10 +84,14 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
 
   /** Mutates the policy in place (admin upsert). */
   public void update(
-      AttestationMode mode, java.util.List<String> allowed, java.util.List<String> denied) {
+      AttestationMode mode,
+      java.util.List<String> allowed,
+      java.util.List<String> denied,
+      boolean mdsStrict) {
     this.mode = mode;
     this.allowedAaguids = csvOrNull(allowed);
     this.deniedAaguids = csvOrNull(denied);
+    this.mdsStrict = mdsStrict;
   }
 
   private static String csvOrNull(java.util.List<String> list) {

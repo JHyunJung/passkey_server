@@ -53,6 +53,11 @@ dependencies {
     // webauthn4j — M2 BE-005
     implementation("com.webauthn4j:webauthn4j-core:0.27.0.RELEASE")
 
+    // FIDO MDS3 BLOB parsing + trust anchor sourcing. Used only when passkey.mds.enabled=true
+    // and a tenant has mds_strict=true on TenantAttestationPolicy. Pulls in the
+    // MetadataBLOBBasedTrustAnchorRepository implementation.
+    implementation("com.webauthn4j:webauthn4j-metadata:0.27.0.RELEASE")
+
     // JWT — M3 BE-011
     implementation("io.jsonwebtoken:jjwt-api:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
