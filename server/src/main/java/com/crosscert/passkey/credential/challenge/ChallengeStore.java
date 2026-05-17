@@ -5,7 +5,6 @@ import com.crosscert.passkey.common.exception.ErrorCode;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,7 +23,6 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class ChallengeStore {
 
-  private static final Duration TTL = Duration.ofMinutes(5);
   private static final String KEY_PREFIX = "passkey:challenge";
 
   /** Lua: atomic GET+DEL. Returns the previous value or nil. Closes the replay window. */
@@ -37,13 +35,16 @@ public class ChallengeStore {
 
   private final StringRedisTemplate redis;
   private final ObjectMapper objectMapper;
+  private final WebauthnCeremonyProperties ceremonyProps;
 
   /** Returns the ceremony id used to look the challenge up on the next request. */
   public UUID save(ChallengeRecord record) {
     UUID ceremonyId = UUID.randomUUID();
     String key = buildKey(record.tenantId(), ceremonyId);
     try {
-      redis.opsForValue().set(key, objectMapper.writeValueAsString(record), TTL);
+      redis
+          .opsForValue()
+          .set(key, objectMapper.writeValueAsString(record), ceremonyProps.challengeTtl());
     } catch (JsonProcessingException e) {
       throw new BusinessException(
           ErrorCode.INTERNAL_SERVER_ERROR, "failed to serialise challenge record", e);

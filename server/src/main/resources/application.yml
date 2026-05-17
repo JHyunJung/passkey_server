@@ -5,6 +5,10 @@ spring:
     database-platform: org.hibernate.dialect.PostgreSQLDialect
     hibernate:
       ddl-auto: validate
+    # Open-Session-In-View is OFF — every JPA access must run inside an explicit @Transactional
+    # boundary in a service/controller method. Leaving OSIV on hides lazy-load problems and keeps
+    # connections checked out for the entire HTTP request, which fights the HikariCP sizing above.
+    open-in-view: false
     properties:
       hibernate:
         format_sql: false
@@ -24,6 +28,29 @@ spring:
       flush-mode: on_save
       namespace: passkey:session
 
+server:
+  # SEC-2: trust X-Forwarded-For / X-Forwarded-Proto from internal proxies (LB / ingress).
+  # The Tomcat RemoteIpValve rewrites HttpServletRequest.getRemoteAddr() so RateLimitFilter and
+  # security loggers see the real client IP instead of the LB hop. Trusted-proxy CIDRs must be set
+  # for each environment — the default below covers RFC1918 ranges + loopback.
+  forward-headers-strategy: framework
+  tomcat:
+    remoteip:
+      remote-ip-header: X-Forwarded-For
+      protocol-header: X-Forwarded-Proto
+      internal-proxies: ${PASSKEY_TRUSTED_PROXIES:10\\.\\d+\\.\\d+\\.\\d+|172\\.(1[6-9]|2[0-9]|3[0-1])\\.\\d+\\.\\d+|192\\.168\\.\\d+\\.\\d+|127\\.0\\.0\\.1}
+  servlet:
+    session:
+      cookie:
+        name: PASSKEY_SESSION
+        http-only: true
+        # SEC-5: lock secure flag for default profile. local profile overrides to false (plain HTTP).
+        secure: ${PASSKEY_COOKIE_SECURE:true}
+        # Default lax for same-origin / local development. Cross-site admin console deployment
+        # overrides to none in application-prod.yml (must pair with secure=true).
+        same-site: ${PASSKEY_SESSION_SAME_SITE:lax}
+        path: /
+
 management:
   endpoints:
     web:
@@ -33,6 +60,21 @@ management:
     health:
       probes:
         enabled: true
+      # OBS-1: include DB + Redis in the k8s readiness probe so the pod drops out of the
+      # service endpoint list when its critical dependencies are unreachable. Without this,
+      # `/actuator/health/readiness` would only reflect Spring's ReadinessState (ACCEPTING_TRAFFIC
+      # after refresh) and keep returning 200 even with the JDBC pool exhausted or Redis down.
+      group:
+        readiness:
+          include: readinessState,db,redis
+        liveness:
+          include: livenessState
+      show-details: never
+  health:
+    db:
+      enabled: true
+    redis:
+      enabled: true
 
 logging:
   pattern:
@@ -41,9 +83,25 @@ logging:
 passkey:
   admin:
     enabled: ${PASSKEY_ADMIN_ENABLED:false}
+    # Admin console SPA origin allow-listed for CORS. Blank in default/local — CORS is disabled
+    # entirely (same-origin only). Set in prod to e.g. https://admin.passkey.example.com.
+    console-origin: ${PASSKEY_ADMIN_CONSOLE_ORIGIN:}
+  # SEC-4 / SEC-5: shared switch for CSRF + session cookie Secure flag. Wire to env so the local
+  # profile (HTTP) overrides to false; prod stays true.
+  cookie:
+    secure: ${PASSKEY_COOKIE_SECURE:true}
+    # Cookie SameSite for CSRF token cookie. Lax for same-origin / local. None for cross-site
+    # admin-console deployment (requires Secure=true and an allow-listed CORS origin).
+    same-site: ${PASSKEY_COOKIE_SAME_SITE:Lax}
   jwt:
     issuer: ${PASSKEY_JWT_ISSUER:passkey-platform}
-    secret: ${PASSKEY_JWT_SECRET:change-me-to-a-long-random-string-at-least-32-bytes}
+    # SEC-3: no default value. JwtProperties enforces >=32-byte secret at startup, so missing env
+    # var fails fast instead of silently shipping a known string.
+    secret: ${PASSKEY_JWT_SECRET:}
+    # Optional previous secret for zero-downtime key rotation. When set, outstanding tokens signed
+    # with the previous secret remain valid for verification (new tokens are signed with the
+    # primary). Clear once the longest refresh-ttl window has passed.
+    previous-secret: ${PASSKEY_JWT_SECRET_PREVIOUS:}
     access-ttl-seconds: 900
     refresh-ttl-seconds: 2592000
   rate-limit:
@@ -51,11 +109,30 @@ passkey:
     registration-per-minute: 30
     authentication-per-minute: 60
     default-per-minute: 120
+    admin-login-per-minute: 5
+    # Per-credential authenticate/verify cap. Defends a single passkey against brute-force /
+    # signature-counter regression DoS. Independent of the per-tenant authenticate bucket above.
+    credential-auth-verify-per-minute: 10
+  api-key:
+    # Argon2id parameters used when issuing new keys. Verify still reads encoded metadata, so a
+    # tuning change applies only to keys issued thereafter.
+    prefix-bytes: 6
+    secret-bytes: 32
+    max-prefix-attempts: 3
+    argon2-memory-kb: 65536
+    argon2-iterations: 2
+    argon2-parallelism: 1
+  webauthn:
+    ceremony:
+      challenge-bytes: 32
+      challenge-ttl: PT5M
   mds:
-    # FIDO MDS3 integration. Disabled by default; ops must (1) mount the FIDO Alliance Global Root
-    # CA at root-certificate-path, (2) flip PASSKEY_MDS_ENABLED=true. Strict tenants
-    # (TenantAttestationPolicy.mdsStrict=true) require this to be enabled.
-    enabled: ${PASSKEY_MDS_ENABLED:false}
+    # FIDO MDS3 integration. Default ON — operators must mount the FIDO Alliance Global Root CA at
+    # root-certificate-path (Kubernetes secret recommended). Override via PASSKEY_MDS_ENABLED=false
+    # only for air-gapped deployments or local development. Strict tenants
+    # (TenantAttestationPolicy.mdsStrict=true) require this to be enabled — when off, MDS strict
+    # registration responds with MDS_UNAVAILABLE.
+    enabled: ${PASSKEY_MDS_ENABLED:true}
     blob-url: ${PASSKEY_MDS_BLOB_URL:https://mds3.fidoalliance.org/}
     root-certificate-path: ${PASSKEY_MDS_ROOT_CA:classpath:fido/Global_Sign_Root_CA.pem}
     refresh-cron: ${PASSKEY_MDS_REFRESH_CRON:0 0 4 * * *}

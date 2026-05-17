@@ -14,7 +14,9 @@ public record CredentialView(
     String transports,
     long signatureCounter,
     OffsetDateTime lastUsedAt,
-    OffsetDateTime createdAt) {
+    OffsetDateTime createdAt,
+    OffsetDateTime revokedAt,
+    String revokedReason) {
 
   public static CredentialView from(Credential c) {
     return new CredentialView(
@@ -27,6 +29,8 @@ public record CredentialView(
         c.getTransports(),
         c.getSignatureCounter(),
         c.getLastUsedAt(),
-        c.getCreatedAt());
+        c.getCreatedAt(),
+        c.getRevokedAt(),
+        c.getRevokedReason() == null ? null : c.getRevokedReason().name());
   }
 }

@@ -3,6 +3,7 @@ package com.crosscert.passkey.credential.controller;
 import com.crosscert.passkey.common.response.ApiResponse;
 import com.crosscert.passkey.credential.api.CredentialRenameRequest;
 import com.crosscert.passkey.credential.api.CredentialView;
+import com.crosscert.passkey.credential.domain.CredentialRevokedReason;
 import com.crosscert.passkey.credential.service.CredentialLifecycleService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -41,7 +42,8 @@ public class CredentialController {
   @DeleteMapping("/{id}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
   public ApiResponse<Void> revoke(@PathVariable UUID id) {
-    lifecycle.revoke(id);
+    // RP-facing delete is the end user choosing to drop their own passkey.
+    lifecycle.revoke(id, CredentialRevokedReason.USER_REQUEST);
     return ApiResponse.ok();
   }
 }

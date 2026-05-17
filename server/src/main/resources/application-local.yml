@@ -23,6 +23,8 @@ spring:
 passkey:
   admin:
     enabled: false
+    # vite dev server. Browsers send Origin=http://localhost:5173, which must match exactly.
+    console-origin: http://localhost:5173
     datasource:
       url: jdbc:postgresql://localhost:5432/passkey
       username: app_admin
@@ -30,6 +32,16 @@ passkey:
       hikari:
         maximum-pool-size: 5
         auto-commit: false
+  # Local dev runs over HTTP — cookies cannot be Secure. Production keeps the default true.
+  cookie:
+    secure: false
+  jwt:
+    # Local-only secret. 32+ bytes to satisfy JwtProperties length check. Never reuse in prod.
+    secret: local-dev-jwt-secret-must-be-at-least-32-bytes-long
   actuator:
     username: actuator
     password: change-me-local-actuator
+  mds:
+    # Local dev: keep MDS off so the server can boot without external FIDO Alliance fetch.
+    # Toggle to true (and provide a root CA) when you need to test MDS-strict tenants locally.
+    enabled: false

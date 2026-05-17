@@ -61,6 +61,13 @@ public class Credential extends TenantScopedEntity {
   @Column(name = "last_used_at")
   private OffsetDateTime lastUsedAt;
 
+  @Column(name = "revoked_at")
+  private OffsetDateTime revokedAt;
+
+  @Enumerated(EnumType.STRING)
+  @Column(name = "revoked_reason")
+  private CredentialRevokedReason revokedReason;
+
   @SuppressWarnings("checkstyle:ParameterNumber")
   private Credential(
       UUID id,
@@ -116,8 +123,22 @@ public class Credential extends TenantScopedEntity {
     this.nickname = nickname;
   }
 
+  /**
+   * Revoke without recording a reason — kept for backward compatibility. Defaults to {@code
+   * ADMIN_FORCED}. Prefer {@link #revoke(CredentialRevokedReason)} which captures who/when/why.
+   */
   public void revoke() {
+    revoke(CredentialRevokedReason.ADMIN_FORCED);
+  }
+
+  /** Revoke with explicit reason — captures revoked_at + reason for forensics. */
+  public void revoke(CredentialRevokedReason reason) {
+    if (this.status == CredentialStatus.REVOKED) {
+      return; // idempotent
+    }
     this.status = CredentialStatus.REVOKED;
+    this.revokedAt = OffsetDateTime.now(ZoneOffset.UTC);
+    this.revokedReason = reason;
   }
 
   public boolean isActive() {

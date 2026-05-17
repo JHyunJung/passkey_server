@@ -7,6 +7,7 @@ import com.crosscert.passkey.auth.jwt.TokenPair;
 import com.crosscert.passkey.auth.jwt.TokenService;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
+import com.crosscert.passkey.common.log.LogSanitiser;
 import com.crosscert.passkey.credential.api.AuthenticationOptionsRequest;
 import com.crosscert.passkey.credential.api.AuthenticationOptionsResponse;
 import com.crosscert.passkey.credential.api.AuthenticationResult;
@@ -14,6 +15,7 @@ import com.crosscert.passkey.credential.api.AuthenticationVerifyRequest;
 import com.crosscert.passkey.credential.challenge.CeremonyType;
 import com.crosscert.passkey.credential.challenge.ChallengeRecord;
 import com.crosscert.passkey.credential.challenge.ChallengeStore;
+import com.crosscert.passkey.credential.challenge.WebauthnCeremonyProperties;
 import com.crosscert.passkey.credential.domain.Credential;
 import com.crosscert.passkey.credential.domain.TenantWebauthnConfig;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
@@ -39,6 +41,7 @@ import com.webauthn4j.verifier.exception.VerificationException;
 import java.security.SecureRandom;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -53,7 +56,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class AuthenticationService {
 
   private static final SecureRandom RNG = new SecureRandom();
-  private static final int CHALLENGE_LEN = 32;
 
   private final TenantWebauthnConfigService configService;
   private final TenantUserRepository userRepo;
@@ -62,15 +64,24 @@ public class AuthenticationService {
   private final WebAuthnManager webAuthnManager;
   private final TokenService tokenService;
   private final AuditService auditService;
+  private final WebauthnCeremonyProperties ceremonyProps;
+  private final com.crosscert.passkey.ratelimit.RateLimiter rateLimiter;
+  private final com.crosscert.passkey.ratelimit.RateLimitProperties rateLimitProps;
   private final com.crosscert.passkey.credential.metrics.CeremonyMetrics metrics;
   private final ObjectConverter objectConverter = new ObjectConverter();
   private final AttestedCredentialDataConverter attestedConverter =
       new AttestedCredentialDataConverter(objectConverter);
 
+  /**
+   * Begins an authentication ceremony. When {@code externalUserId} is provided, returns the active
+   * credentials for that user as {@code allowCredentials}; otherwise leaves the list empty for
+   * discoverable-credential / usernameless flows. The challenge is stored in Redis under a ceremony
+   * id which must be echoed back to {@link #finishAuthentication}.
+   */
   @Transactional
   public AuthenticationOptionsResponse beginAuthentication(AuthenticationOptionsRequest req) {
     TenantWebauthnConfig cfg = configService.requireCurrent();
-    byte[] challenge = randomBytes(CHALLENGE_LEN);
+    byte[] challenge = randomBytes(ceremonyProps.challengeBytes());
     String challengeB64u = Base64UrlCodec.encode(challenge);
 
     UUID tenantUserId = null;
@@ -95,6 +106,17 @@ public class AuthenticationService {
             challengeB64u, cfg.getTenantId(), tenantUserId, CeremonyType.AUTHENTICATION, null);
     UUID ceremonyId = challengeStore.save(stored);
 
+    // P2-3: emit start event for funnel drop-off measurement. tenantUserId is null for
+    // discoverable-credential flows; that's fine — the row still increments the attempt counter.
+    auditService.append(
+        AuditEventType.AUTHENTICATION_OPTIONS_REQUESTED,
+        ActorType.END_USER,
+        tenantUserId == null ? null : tenantUserId.toString(),
+        "TENANT_USER",
+        tenantUserId == null ? null : tenantUserId.toString(),
+        java.util.Map.of(
+            "ceremonyId", ceremonyId.toString(), "allowCredentials", allowCredentials.size()));
+
     log.info(
         "auth.begin tenantId={} tenantUserId={} ceremonyId={} allowCredentials={}",
         cfg.getTenantId(),
@@ -108,14 +130,23 @@ public class AuthenticationService {
         cfg.getTimeoutMs(),
         cfg.getRpId(),
         allowCredentials,
-        cfg.getUserVerification().name().toLowerCase());
+        cfg.getUserVerification().name().toLowerCase(Locale.ROOT));
   }
 
+  /**
+   * Completes an authentication ceremony: consumes the challenge, verifies the assertion against
+   * the stored credential, updates the signature counter, and issues a JWT pair. Throws {@link
+   * BusinessException} for missing/expired challenges ({@code CHALLENGE_NOT_FOUND}), revoked
+   * credentials ({@code CREDENTIAL_REVOKED}), invalid assertions ({@code ASSERTION_INVALID}), and
+   * signature counter regressions ({@code SIGNATURE_COUNTER_REGRESSION}). Success audit is written
+   * asynchronously after commit; failure audits stay synchronous for compliance.
+   */
   @Transactional
   public AuthenticationResult finishAuthentication(AuthenticationVerifyRequest req) {
     TenantWebauthnConfig cfg = configService.requireCurrent();
+    enforceCredentialRateLimit(cfg.getTenantId(), req.credentialId());
     ChallengeRecord stored = consumeChallenge(req);
-    Credential credential = lookupActiveCredential(req);
+    Credential credential = lookupActiveCredential(req, cfg.getTenantId());
     AuthenticationData authnData = verifyAssertion(cfg, stored, credential, req);
 
     long newCounter = authnData.getAuthenticatorData().getSignCount();
@@ -127,7 +158,7 @@ public class AuthenticationService {
             .orElseThrow(() -> new BusinessException(ErrorCode.ENTITY_NOT_FOUND));
     TokenPair tokens = tokenService.issue(cfg.getTenantId(), user.getId(), user.getExternalId());
 
-    auditService.append(
+    auditService.appendAfterCommit(
         AuditEventType.CREDENTIAL_AUTHENTICATED,
         ActorType.END_USER,
         user.getId().toString(),
@@ -154,6 +185,33 @@ public class AuthenticationService {
         tokens.accessExpiresIn());
   }
 
+  /**
+   * Per-credential rate limit: defends a single passkey against brute-force / signature-counter
+   * regression DoS. Independent of the tenant-wide authenticate bucket — even a tenant under its
+   * limit cannot pound a single credential. On miss we audit and throw {@code RATE_LIMIT_EXCEEDED}.
+   */
+  private void enforceCredentialRateLimit(java.util.UUID tenantId, String credentialId) {
+    if (!rateLimitProps.enabled() || credentialId == null || credentialId.isBlank()) {
+      return;
+    }
+    String bucket = tenantId + ":auth-verify:cred:" + credentialId;
+    if (!rateLimiter.tryAcquire(bucket, rateLimitProps.credentialAuthVerifyPerMinute())) {
+      log.warn(
+          "auth.credential.ratelimit.exceeded tenantId={} credentialId={} limit={}",
+          tenantId,
+          com.crosscert.passkey.common.log.LogSanitiser.forLog(credentialId),
+          rateLimitProps.credentialAuthVerifyPerMinute());
+      auditService.append(
+          AuditEventType.CREDENTIAL_AUTH_RATE_LIMIT,
+          ActorType.END_USER,
+          null,
+          "CREDENTIAL",
+          credentialId,
+          java.util.Map.of("limit", rateLimitProps.credentialAuthVerifyPerMinute()));
+      throw new BusinessException(ErrorCode.RATE_LIMIT_EXCEEDED);
+    }
+  }
+
   private ChallengeRecord consumeChallenge(AuthenticationVerifyRequest req) {
     ChallengeRecord stored =
         challengeStore
@@ -165,10 +223,15 @@ public class AuthenticationService {
     return stored;
   }
 
-  private Credential lookupActiveCredential(AuthenticationVerifyRequest req) {
+  private Credential lookupActiveCredential(
+      AuthenticationVerifyRequest req, java.util.UUID tenantId) {
+    // Defense-in-depth: the unique constraint on credential is (tenant_id, credential_id) and RLS
+    // gates the SELECT, but we still pin the tenant explicitly. A future bug or a code path that
+    // accidentally runs with the BYPASSRLS admin connection would otherwise let an attacker who
+    // learned another tenant's credentialId impersonate that user.
     Credential credential =
         credentialRepo
-            .findByCredentialId(req.credentialId())
+            .findByCredentialIdAndTenantId(req.credentialId(), tenantId)
             .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
     if (!credential.isActive()) {
       throw new BusinessException(ErrorCode.CREDENTIAL_REVOKED);
@@ -215,8 +278,8 @@ public class AuthenticationService {
       log.warn(
           "auth.assertion.invalid tenantId={} credentialId={} reason={}",
           cfg.getTenantId(),
-          sanitiseForLog(req.credentialId()),
-          sanitiseForLog(e.getMessage()));
+          LogSanitiser.forLog(req.credentialId()),
+          LogSanitiser.forLog(e.getMessage()));
       metrics.getAuthenticationFailure().increment();
       throw new BusinessException(ErrorCode.ASSERTION_INVALID, e.getMessage());
     }
@@ -235,6 +298,11 @@ public class AuthenticationService {
             credential.getCredentialId(),
             credential.getSignatureCounter(),
             newCounter);
+        // FIDO clone-detection signal — auto-revoke the credential so the cloned key cannot keep
+        // racing the legitimate device.
+        credential.revoke(
+            com.crosscert.passkey.credential.domain.CredentialRevokedReason
+                .SIGNATURE_COUNTER_REGRESSION);
         auditService.append(
             AuditEventType.SIGNATURE_COUNTER_REGRESSION,
             ActorType.END_USER,
@@ -242,7 +310,12 @@ public class AuthenticationService {
             "CREDENTIAL",
             credential.getId().toString(),
             java.util.Map.of(
-                "storedCounter", credential.getSignatureCounter(), "newCounter", newCounter));
+                "storedCounter",
+                credential.getSignatureCounter(),
+                "newCounter",
+                newCounter,
+                "autoRevoked",
+                true));
         metrics.getSignatureCounterRegression().increment();
         metrics.getAuthenticationFailure().increment();
       }
@@ -254,13 +327,5 @@ public class AuthenticationService {
     byte[] buf = new byte[len];
     RNG.nextBytes(buf);
     return buf;
-  }
-
-  /** Defends against log injection: strips CR/LF from user-controlled strings before logging. */
-  private static String sanitiseForLog(String s) {
-    if (s == null) {
-      return "";
-    }
-    return s.replace('\n', '_').replace('\r', '_');
   }
 }

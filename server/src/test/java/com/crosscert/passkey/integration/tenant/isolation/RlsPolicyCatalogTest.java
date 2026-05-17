@@ -25,7 +25,8 @@ class RlsPolicyCatalogTest extends IntegrationTestBase {
           "tenant_webauthn_config",
           "credential",
           "tenant_attestation_policy",
-          "audit_log");
+          "audit_log",
+          "refresh_token");
 
   @Autowired DataSource runtimeDataSource;
 

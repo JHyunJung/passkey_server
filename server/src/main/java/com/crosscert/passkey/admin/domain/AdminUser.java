@@ -90,4 +90,8 @@ public class AdminUser extends BaseEntity {
   public void suspend() {
     this.status = AdminStatus.SUSPENDED;
   }
+
+  public void resetPassword(String newPasswordHash) {
+    this.passwordHash = newPasswordHash;
+  }
 }

@@ -1,5 +1,7 @@
 package com.crosscert.passkey.credential.metadata;
 
+import com.crosscert.passkey.common.exception.BusinessException;
+import com.crosscert.passkey.common.exception.ErrorCode;
 import com.webauthn4j.converter.util.ObjectConverter;
 import com.webauthn4j.metadata.FidoMDS3MetadataBLOBProvider;
 import com.webauthn4j.metadata.MetadataBLOBProvider;
@@ -87,7 +89,15 @@ public class MdsBlobProvider implements MetadataBLOBProvider {
 
   @Override
   public MetadataBLOB provide() {
-    return delegate.provide();
+    // Defensive: warm-up failure leaves lastBlob null; the webauthn4j delegate may also return null
+    // before its internal cache is populated. Strict tenants must fail-closed with MDS_UNAVAILABLE
+    // rather than NPE somewhere deep inside the trust-anchor resolver.
+    MetadataBLOB blob = delegate.provide();
+    if (blob == null) {
+      log.error("mds.provide.unavailable cause=blob_not_yet_fetched");
+      throw new BusinessException(ErrorCode.MDS_UNAVAILABLE);
+    }
+    return blob;
   }
 
   private X509Certificate loadRootCa(ResourceLoader resourceLoader) {

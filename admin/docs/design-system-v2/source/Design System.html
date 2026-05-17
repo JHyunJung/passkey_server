@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1280" />
+<title>Design System · Passkey Admin</title>
+
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+<link rel="stylesheet" href="src/tokens.css" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="src/icons.jsx"></script>
+<script type="text/babel" src="src/tweaks-panel.jsx"></script>
+<script type="text/babel">
+// Inline small helpers used by the DS specimens (Field, Segmented, Toggle).
+function Field({ label, hint, children }) {
+  return (
+    <div>
+      <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--text-soft)", marginBottom: 6 }}>{label}</label>
+      {children}
+      {hint && <div style={{ fontSize: 12, color: "var(--text-mute)", marginTop: 4 }}>{hint}</div>}
+    </div>
+  );
+}
+function Segmented({ value, onChange, options }) {
+  return (
+    <div style={{ display: "inline-flex", padding: 3, background: "var(--surface-3)", borderRadius: 8, border: "1px solid var(--border)" }}>
+      {options.map((o) => (
+        <button key={o} onClick={() => onChange(o)} style={{
+          padding: "4px 10px", border: 0, borderRadius: 6,
+          background: value === o ? "var(--surface)" : "transparent",
+          color: value === o ? "var(--text)" : "var(--text-mute)",
+          fontWeight: value === o ? 600 : 500, fontSize: 11,
+          boxShadow: value === o ? "var(--shadow-sm)" : "none",
+          cursor: "pointer", fontFamily: "var(--mono)",
+        }}>{o}</button>
+      ))}
+    </div>
+  );
+}
+function Toggle({ on, onChange, label }) {
+  return (
+    <button onClick={() => onChange(!on)} style={{ display: "inline-flex", alignItems: "center", gap: 8, border: 0, background: "transparent", padding: 0, cursor: "pointer" }}>
+      <span style={{ position: "relative", width: 36, height: 20, borderRadius: 999, background: on ? "var(--accent)" : "var(--border-strong)", display: "inline-block" }}>
+        <span style={{ position: "absolute", top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: 999, background: "white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "left 120ms ease" }} />
+      </span>
+      <span style={{ fontSize: 13, color: "var(--text)" }}>{label}</span>
+    </button>
+  );
+}
+window.Field = Field;
+window.Segmented = Segmented;
+window.Toggle = Toggle;
+</script>
+<script type="text/babel" src="src/design-system.jsx"></script>
+
+</body>
+</html>

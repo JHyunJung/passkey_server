@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import org.springframework.http.MediaType;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -28,7 +29,10 @@ public class JsonLoginAuthenticationFilter extends OncePerRequestFilter {
     return !("POST".equalsIgnoreCase(request.getMethod())
         && "/api/v1/admin/auth/login".equals(request.getRequestURI())
         && request.getContentType() != null
-        && request.getContentType().toLowerCase().contains(MediaType.APPLICATION_JSON_VALUE));
+        && request
+            .getContentType()
+            .toLowerCase(Locale.ROOT)
+            .contains(MediaType.APPLICATION_JSON_VALUE));
   }
 
   @Override

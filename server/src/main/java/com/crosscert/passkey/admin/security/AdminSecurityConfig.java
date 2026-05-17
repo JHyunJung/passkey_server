@@ -3,35 +3,51 @@ package com.crosscert.passkey.admin.security;
 import com.crosscert.passkey.admin.repository.AdminUserRepository;
 import com.crosscert.passkey.auth.apikey.security.ApiKeyAuthenticationFilter;
 import com.crosscert.passkey.auth.apikey.service.ApiKeyService;
+import com.crosscert.passkey.common.exception.ErrorCode;
+import com.crosscert.passkey.common.log.LogSanitiser;
 import com.crosscert.passkey.common.response.ApiResponse;
 import com.crosscert.passkey.tenant.service.TenantQueryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
+import java.time.Duration;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
-import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 /**
- * Three security chains:
+ * Four security chains:
  *
  * <ol>
- *   <li>Order(1) — {@code /api/v1/admin/**}: form login + session cookie + CSRF token.
- *   <li>Order(2) — {@code /api/v1/rp/**}: stateless, API key resolution handled by {@code
- *       ApiKeyTenantResolver}/{@code TenantResolutionFilter}; Spring Security stays out of the way
- *       (permit-all because the tenant filter already enforces the gate).
- *   <li>Order(3) — everything else (actuator, /_diag, swagger, error): permitAll.
+ *   <li>Order(1) — {@code /api/v1/admin/**}: form login + session cookie + CSRF token (cookie
+ *       attributes: {@code Secure}, {@code SameSite=Lax}, {@code Path=/api/v1/admin}; HttpOnly is
+ *       intentionally off so the SPA reads the token and echoes it in the {@code X-XSRF-TOKEN}
+ *       header).
+ *   <li>Order(2) — {@code /api/v1/rp/**}: stateless, API key resolution via {@link
+ *       ApiKeyAuthenticationFilter}.
+ *   <li>Order(3) — health/info, {@code /_diag}, swagger, error: permitAll.
+ *   <li>Order(4) — remaining {@code /actuator/**}: HTTP basic + {@code ROLE_ACTUATOR}.
  * </ol>
  */
 @Slf4j
@@ -41,6 +57,29 @@ public class AdminSecurityConfig {
 
   private final ObjectMapper objectMapper;
 
+  /**
+   * Controls the {@code Secure} flag on the CSRF and session cookies. Defaults to true so prod is
+   * locked down by default; local HTTP-only development overrides to false.
+   */
+  @Value("${passkey.cookie.secure:true}")
+  private boolean cookieSecure;
+
+  /**
+   * Cookie {@code SameSite} attribute for CSRF and session cookies. {@code lax} is the local /
+   * same-origin default. {@code none} is required when the admin console is hosted on a separate
+   * cross-site origin (e.g. {@code admin.passkey.example.com}); it must be paired with {@code
+   * Secure=true} and an allow-listed CORS origin.
+   */
+  @Value("${passkey.cookie.same-site:Lax}")
+  private String cookieSameSite;
+
+  /**
+   * Allowed origin for cross-origin admin console traffic. When blank, CORS is disabled (same-
+   * origin only — local development). Configure via {@code PASSKEY_ADMIN_CONSOLE_ORIGIN} in prod.
+   */
+  @Value("${passkey.admin.console-origin:}")
+  private String adminConsoleOrigin;
+
   @Bean
   public PasswordEncoder passwordEncoder() {
     return new BCryptPasswordEncoder();
@@ -48,10 +87,40 @@ public class AdminSecurityConfig {
 
   @Bean
   @Order(1)
-  public SecurityFilterChain adminFilterChain(HttpSecurity http, AdminUserRepository adminRepo)
+  public SecurityFilterChain adminFilterChain(
+      HttpSecurity http,
+      AdminUserRepository adminRepo,
+      AdminUserDetailsService adminUserDetailsService)
       throws Exception {
+    // Two UserDetailsService beans (admin + actuator) coexist, so Spring's autoconfiguration skips
+    // wiring a global DaoAuthenticationProvider. Bind ours explicitly to the admin chain.
+    DaoAuthenticationProvider daoProvider = new DaoAuthenticationProvider();
+    daoProvider.setUserDetailsService(adminUserDetailsService);
+    daoProvider.setPasswordEncoder(passwordEncoder());
+    CookieCsrfTokenRepository csrfRepo = CookieCsrfTokenRepository.withHttpOnlyFalse();
+    // SPA reads XSRF-TOKEN via document.cookie which honours Path scope — anchor the cookie at "/"
+    // so the SPA's router pages (and axios in particular) can read it before any /api/v1/admin
+    // request goes out. SameSite=Lax + Path=/ is fine because we still gate the API itself.
+    String csrfPath = "/";
+    csrfRepo.setCookieCustomizer(
+        cookie -> cookie.secure(cookieSecure).sameSite(cookieSameSite).path(csrfPath));
+    // Force eager CSRF token resolution so the XSRF-TOKEN cookie is set on the very first response,
+    // letting the SPA echo it in X-XSRF-TOKEN on the next login POST. Without this, Spring Security
+    // 6's deferred handler skips setting the cookie when no request attribute reads the token.
+    CsrfTokenRequestAttributeHandler csrfHandler = new CsrfTokenRequestAttributeHandler();
+    csrfHandler.setCsrfRequestAttributeName(null);
     return http.securityMatcher("/api/v1/admin/**")
-        .csrf(c -> c.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))
+        .authenticationProvider(daoProvider)
+        .cors(
+            c -> {
+              if (adminConsoleOrigin != null && !adminConsoleOrigin.isBlank()) {
+                c.configurationSource(corsConfigurationSource());
+              } else {
+                c.disable();
+              }
+            })
+        .csrf(c -> c.csrfTokenRepository(csrfRepo).csrfTokenRequestHandler(csrfHandler))
+        .headers(adminHeaders())
         .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
         .authorizeHttpRequests(
             authz ->
@@ -68,17 +137,20 @@ public class AdminSecurityConfig {
                         (req, res, ex) -> {
                           log.warn(
                               "admin.login.failure email={} ip={} reason={}",
-                              sanitiseEmail(req.getParameter("username")),
+                              LogSanitiser.maskEmail(req.getParameter("username")),
                               req.getRemoteAddr(),
                               ex.getClass().getSimpleName());
-                          writeError(res, HttpStatus.UNAUTHORIZED, "A001", "Login failed");
+                          writeError(res, ErrorCode.UNAUTHORIZED);
                         }))
         .logout(
             logout ->
                 logout
                     .logoutUrl("/api/v1/admin/auth/logout")
                     .logoutRequestMatcher(
-                        new AntPathRequestMatcher("/api/v1/admin/auth/logout", "POST"))
+                        PathPatternRequestMatcher.withDefaults()
+                            .matcher(
+                                org.springframework.http.HttpMethod.POST,
+                                "/api/v1/admin/auth/logout"))
                     .logoutSuccessHandler(
                         (req, res, auth) -> writeJson(res, HttpStatus.OK, "Logged out")))
         .exceptionHandling(
@@ -87,18 +159,18 @@ public class AdminSecurityConfig {
                         (req, res, e) -> {
                           log.warn(
                               "admin.unauthenticated path={} ip={}",
-                              req.getRequestURI(),
+                              LogSanitiser.forLog(req.getRequestURI()),
                               req.getRemoteAddr());
-                          writeError(res, HttpStatus.UNAUTHORIZED, "A010", "Admin login required");
+                          writeError(res, ErrorCode.ADMIN_LOGIN_REQUIRED);
                         })
                     .accessDeniedHandler(
                         (req, res, e) -> {
                           log.warn(
                               "admin.access_denied path={} ip={} reason={}",
-                              req.getRequestURI(),
+                              LogSanitiser.forLog(req.getRequestURI()),
                               req.getRemoteAddr(),
-                              e.getMessage());
-                          writeError(res, HttpStatus.FORBIDDEN, "A002", "Access denied");
+                              LogSanitiser.forLog(e.getMessage()));
+                          writeError(res, ErrorCode.ACCESS_DENIED);
                         }))
         .addFilterBefore(
             new com.crosscert.passkey.admin.security.JsonLoginAuthenticationFilter(objectMapper),
@@ -114,6 +186,7 @@ public class AdminSecurityConfig {
       throws Exception {
     return http.securityMatcher("/api/v1/rp/**")
         .csrf(AbstractHttpConfigurer::disable)
+        .headers(apiHeaders())
         .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .addFilterBefore(
             new ApiKeyAuthenticationFilter(apiKeyService, tenantQueryService),
@@ -125,10 +198,9 @@ public class AdminSecurityConfig {
                     (req, res, e) -> {
                       log.warn(
                           "rp.unauthorized path={} ip={}",
-                          req.getRequestURI(),
+                          LogSanitiser.forLog(req.getRequestURI()),
                           req.getRemoteAddr());
-                      writeError(
-                          res, HttpStatus.UNAUTHORIZED, "A005", "Invalid or missing API key");
+                      writeError(res, ErrorCode.INVALID_API_KEY);
                     }))
         .build();
   }
@@ -148,6 +220,15 @@ public class AdminSecurityConfig {
             "/swagger-ui.html",
             "/error")
         .csrf(AbstractHttpConfigurer::disable)
+        // Health/info/error are JSON; Swagger needs to render HTML+inline script, so keep CSP off
+        // here but still apply HSTS + frame-ancestors via apiHeaders without contentSecurityPolicy.
+        .headers(
+            h ->
+                h.httpStrictTransportSecurity(
+                        hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31_536_000))
+                    .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
+                    .referrerPolicy(
+                        rp -> rp.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER)))
         .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(authz -> authz.anyRequest().permitAll())
         .build();
@@ -158,14 +239,67 @@ public class AdminSecurityConfig {
   public SecurityFilterChain actuatorChain(HttpSecurity http) throws Exception {
     // Sensitive actuator endpoints — /actuator/prometheus, /actuator/env, etc. — require
     // authentication. HTTP basic against the in-memory actuator user. Production should
-    // additionally
-    // restrict access at the network layer (LB rule / k8s NetworkPolicy).
+    // additionally restrict access at the network layer (LB rule / k8s NetworkPolicy).
     return http.securityMatcher("/actuator/**")
         .csrf(AbstractHttpConfigurer::disable)
+        .headers(apiHeaders())
         .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-        .httpBasic(org.springframework.security.config.Customizer.withDefaults())
+        .httpBasic(Customizer.withDefaults())
         .authorizeHttpRequests(authz -> authz.anyRequest().hasRole("ACTUATOR"))
         .build();
+  }
+
+  /**
+   * CORS source for the admin chain. Used only when {@link #adminConsoleOrigin} is non-blank — the
+   * admin console SPA lives on a different origin (e.g. {@code admin.passkey.example.com}) and must
+   * send credentials (session cookie + CSRF cookie) cross-site.
+   */
+  private CorsConfigurationSource corsConfigurationSource() {
+    CorsConfiguration cfg = new CorsConfiguration();
+    cfg.setAllowedOrigins(List.of(adminConsoleOrigin));
+    cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
+    cfg.setAllowedHeaders(List.of("Content-Type", "X-XSRF-TOKEN", "X-Trace-Id"));
+    cfg.setExposedHeaders(List.of("X-Trace-Id"));
+    cfg.setAllowCredentials(true);
+    cfg.setMaxAge(Duration.ofHours(1));
+    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+    source.registerCorsConfiguration("/api/v1/admin/**", cfg);
+    return source;
+  }
+
+  /**
+   * Headers for HTML-rendering chains (admin console SPA). Same as {@link #apiHeaders()} except
+   * {@code frame-ancestors} stays {@code 'none'} (the SPA does not iframe itself) and we leave room
+   * for future {@code script-src 'self'} if the admin UI is ever served from the same origin.
+   */
+  private Customizer<HeadersConfigurer<HttpSecurity>> adminHeaders() {
+    return h ->
+        h.httpStrictTransportSecurity(
+                hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31_536_000))
+            .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
+            .referrerPolicy(
+                rp ->
+                    rp.policy(
+                        ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+            .contentSecurityPolicy(
+                csp ->
+                    csp.policyDirectives(
+                        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+                            + "form-action 'self'"));
+  }
+
+  /**
+   * Strictest headers for JSON APIs and actuator endpoints. The body is never rendered as HTML, so
+   * CSP can be locked to {@code default-src 'none'}.
+   */
+  private Customizer<HeadersConfigurer<HttpSecurity>> apiHeaders() {
+    return h ->
+        h.httpStrictTransportSecurity(
+                hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31_536_000))
+            .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
+            .referrerPolicy(rp -> rp.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+            .contentSecurityPolicy(
+                csp -> csp.policyDirectives("default-src 'none'; frame-ancestors 'none'"));
   }
 
   private void writeJson(HttpServletResponse res, HttpStatus status, String msg)
@@ -175,34 +309,9 @@ public class AdminSecurityConfig {
     res.getWriter().write(objectMapper.writeValueAsString(ApiResponse.ok(msg, null)));
   }
 
-  /**
-   * Masks the local-part of an email for safer logging — keeps domain visible for grouping by
-   * tenant/RP while not exposing full PII in operational logs.
-   */
-  private String sanitiseEmail(String email) {
-    if (email == null || email.isBlank()) {
-      return "-";
-    }
-    String stripped = email.replace('\n', '_').replace('\r', '_');
-    int at = stripped.indexOf('@');
-    if (at <= 1) {
-      return "***" + stripped.substring(Math.max(0, at));
-    }
-    return stripped.charAt(0) + "***" + stripped.substring(at);
-  }
-
-  private void writeError(HttpServletResponse res, HttpStatus status, String code, String msg)
-      throws java.io.IOException {
-    res.setStatus(status.value());
+  private void writeError(HttpServletResponse res, ErrorCode code) throws java.io.IOException {
+    res.setStatus(code.getStatus().value());
     res.setContentType("application/json");
-    String body =
-        "{\"success\":false,\"code\":\""
-            + code
-            + "\",\"message\":\""
-            + msg
-            + "\",\"error\":{\"errorCode\":\""
-            + code
-            + "\"}}";
-    res.getWriter().write(body);
+    res.getWriter().write(objectMapper.writeValueAsString(ApiResponse.error(code)));
   }
 }

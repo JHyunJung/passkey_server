@@ -36,6 +36,8 @@ public enum ErrorCode {
   INVALID_TOKEN(HttpStatus.UNAUTHORIZED, "A004", "Invalid token"),
   INVALID_API_KEY(HttpStatus.UNAUTHORIZED, "A005", "Invalid API key"),
   ADMIN_LOGIN_REQUIRED(HttpStatus.UNAUTHORIZED, "A010", "Admin login required"),
+  REFRESH_TOKEN_REVOKED(HttpStatus.UNAUTHORIZED, "A011", "Refresh token revoked"),
+  REFRESH_TOKEN_REUSED(HttpStatus.UNAUTHORIZED, "A012", "Refresh token reuse detected"),
 
   // ---------- Tenant (T) ----------
   TENANT_NOT_FOUND(HttpStatus.NOT_FOUND, "T001", "Tenant not found"),
@@ -59,6 +61,10 @@ public enum ErrorCode {
       HttpStatus.SERVICE_UNAVAILABLE, "P011", "MDS service unavailable for strict tenant"),
   AUTHENTICATOR_REVOKED(
       HttpStatus.FORBIDDEN, "P012", "Authenticator has been revoked or compromised"),
+  SYNCABLE_NOT_ALLOWED(
+      HttpStatus.FORBIDDEN, "P013", "Syncable / backup-eligible authenticator not allowed"),
+  MDS_DISABLED(HttpStatus.CONFLICT, "P014", "FIDO MDS is disabled on this deployment"),
+  MDS_REFRESH_FAILED(HttpStatus.BAD_GATEWAY, "P015", "Failed to refresh FIDO MDS metadata"),
 
   // ---------- Rate-limit (R) — M3 ----------
   RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "R001", "Rate limit exceeded"),
@@ -69,7 +75,11 @@ public enum ErrorCode {
 
   // ---------- Admin (M) — M4 ----------
   ADMIN_USER_NOT_FOUND(HttpStatus.NOT_FOUND, "M001", "Admin user not found"),
-  ADMIN_ROLE_FORBIDDEN(HttpStatus.FORBIDDEN, "M002", "Admin role does not permit this action");
+  ADMIN_ROLE_FORBIDDEN(HttpStatus.FORBIDDEN, "M002", "Admin role does not permit this action"),
+  ADMIN_USER_EMAIL_DUPLICATE(HttpStatus.CONFLICT, "M003", "Admin email already exists"),
+  ADMIN_USER_SELF_DELETE_FORBIDDEN(
+      HttpStatus.FORBIDDEN, "M004", "Cannot delete or modify your own account"),
+  ADMIN_PASSWORD_INVALID(HttpStatus.UNAUTHORIZED, "M005", "Current password is incorrect");
 
   private final HttpStatus status;
   private final String code;

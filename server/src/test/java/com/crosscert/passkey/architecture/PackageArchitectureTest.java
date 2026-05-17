@@ -13,7 +13,7 @@ import com.tngtech.archunit.lang.SimpleConditionEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.bind.annotation.RequestMapping;
 
-/** M1 architecture invariants. Five rules — see Plan §3.4. */
+/** M1 architecture invariants. Six rules — see Plan §3.4. */
 class PackageArchitectureTest {
 
   private static final String ROOT = "com.crosscert.passkey";
@@ -98,6 +98,60 @@ class PackageArchitectureTest {
         .areAnnotatedWith(RequestMapping.class)
         .should(haveReservedPrefix())
         .check(CLASSES);
+  }
+
+  // Rule 6: every controller mapped under /api/v1/admin/tenants/{...} must depend on AdminAuthz —
+  // a syntactic guard that catches a controller author forgetting to call
+  // AdminAuthz.requireTenantAccess / requirePlatformOperator. This is a class-level check, so a
+  // controller that imports AdminAuthz but only conditionally calls it still passes; the real
+  // safety net is the human-readable AdminAuthz import + a code-review prompt. False positives
+  // are zero because every admin endpoint uses the same single entrypoint.
+  @Test
+  void admin_tenant_controllers_depend_on_admin_authz() {
+    classes()
+        .that()
+        .resideInAPackage("..admin.controller..")
+        .and()
+        .areAnnotatedWith(RequestMapping.class)
+        .should(referenceAdminAuthz())
+        .check(CLASSES);
+  }
+
+  private static ArchCondition<JavaClass> referenceAdminAuthz() {
+    return new ArchCondition<>("reference com.crosscert.passkey.admin.security.AdminAuthz") {
+      @Override
+      public void check(JavaClass clazz, ConditionEvents events) {
+        RequestMapping mapping = clazz.getAnnotationOfType(RequestMapping.class);
+        String[] paths = mapping.value().length > 0 ? mapping.value() : mapping.path();
+        boolean tenantScoped = false;
+        for (String p : paths) {
+          if (p.startsWith("/api/v1/admin/tenants/{") || p.startsWith("/api/v1/admin/admins")) {
+            // /admins is platform-operator only — requires AdminAuthz too.
+            tenantScoped = true;
+            break;
+          }
+        }
+        if (!tenantScoped) {
+          return; // not in scope of this rule.
+        }
+        boolean refs =
+            clazz.getDirectDependenciesFromSelf().stream()
+                .anyMatch(
+                    d ->
+                        d.getTargetClass()
+                            .getFullName()
+                            .equals("com.crosscert.passkey.admin.security.AdminAuthz"));
+        if (!refs) {
+          events.add(
+              SimpleConditionEvent.violated(
+                  clazz,
+                  clazz.getName()
+                      + " is mapped under a tenant-scoped admin prefix but does not call"
+                      + " AdminAuthz — every such endpoint must guard with requireTenantAccess(...)"
+                      + " or requirePlatformOperator()."));
+        }
+      }
+    };
   }
 
   private static ArchCondition<JavaClass> haveReservedPrefix() {

@@ -1,0 +1,183 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+ * Design tokens — v2 · 2026 refresh
+ * Linear / Vercel inspiration · OKLCH palette · hairline borders.
+ * Imported from the design handoff bundle. Kept in lock-step with
+ * the figma-equivalent `Design System.html` reference.
+ * ============================================================ */
+
+/* Pretendard for Korean / Geist for Latin & digits / Geist Mono */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css");
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
+
+@layer base {
+  :root {
+    /* ── Surfaces & text · light ─────────────────────────────── */
+    --bg:           oklch(0.985 0.002 270);
+    --surface:      oklch(1    0     0);
+    --surface-2:    oklch(0.978 0.003 270);
+    --surface-3:    oklch(0.955 0.005 270);
+    --surface-sunk: oklch(0.945 0.006 270);
+
+    --border-subtle:  oklch(0.945 0.005 270);
+    --border:         oklch(0.915 0.006 270);
+    --border-strong:  oklch(0.855 0.008 270);
+
+    --text:        oklch(0.22 0.015 270);
+    --text-soft:   oklch(0.40 0.012 270);
+    --text-mute:   oklch(0.56 0.012 270);
+    --text-faint:  oklch(0.72 0.010 270);
+
+    /* ── Accent · indigo, OKLCH ──────────────────────────────── */
+    --accent:        oklch(0.56 0.215 268);
+    --accent-hover:  oklch(0.49 0.225 268);
+    --accent-press:  oklch(0.43 0.220 268);
+    --accent-soft:   oklch(0.96 0.030 268);
+    --accent-soft-2: oklch(0.92 0.055 268);
+    --accent-fg:     #ffffff;
+
+    /* ── Semantic ───────────────────────────────────────────── */
+    --success:       oklch(0.62 0.155 155);
+    --success-soft:  oklch(0.955 0.045 155);
+    --warning:       oklch(0.70 0.165  75);
+    --warning-soft:  oklch(0.965 0.055  85);
+    --danger:        oklch(0.60 0.210  25);
+    --danger-soft:   oklch(0.962 0.038  25);
+    --info:          oklch(0.58 0.180 245);
+    --info-soft:     oklch(0.96 0.035 245);
+    --violet:        oklch(0.58 0.215 295);
+    --violet-soft:   oklch(0.96 0.035 295);
+    --teal:          oklch(0.62 0.110 195);
+    --teal-soft:     oklch(0.955 0.040 195);
+
+    /* ── Elevation · refined, near-hairline ─────────────────── */
+    --shadow-xs: 0 1px 0 0 oklch(0.22 0.015 270 / 0.04);
+    --shadow-sm: 0 1px 2px oklch(0.22 0.015 270 / 0.06),
+                 0 0 0 1px oklch(0.22 0.015 270 / 0.04);
+    --shadow-md: 0 4px 10px oklch(0.22 0.015 270 / 0.07),
+                 0 1px 2px  oklch(0.22 0.015 270 / 0.05);
+    --shadow-lg: 0 20px 40px -8px oklch(0.22 0.015 270 / 0.18),
+                 0 6px 14px -4px  oklch(0.22 0.015 270 / 0.10);
+    --focus-ring: 0 0 0 3px oklch(0.56 0.215 268 / 0.22);
+
+    /* ── Radii ──────────────────────────────────────────────── */
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius:    8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-pill: 999px;
+
+    /* ── Typography ─────────────────────────────────────────── */
+    --font: "Geist", "Pretendard Variable", "Pretendard",
+            -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+            "Helvetica Neue", "Apple SD Gothic Neo", "Noto Sans KR",
+            sans-serif;
+    --mono: "Geist Mono", "JetBrains Mono", ui-monospace,
+            "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+    --letter-tight:   -0.011em;
+    --letter-tighter: -0.022em;
+
+    /* ── Motion ─────────────────────────────────────────────── */
+    --dur-fast: 100ms;
+    --dur:      160ms;
+    --dur-slow: 240ms;
+    --ease-out:    cubic-bezier(0.2, 0.7, 0.2, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+    /* ── Density ────────────────────────────────────────────── */
+    --row-py: 8px;
+    --row-px: 14px;
+    --row-font: 13px;
+    --card-pad: 20px;
+    --sidebar-w: 232px;
+
+    /* ── shadcn shim — kept so existing utilities (bg-card,
+     *    text-muted-foreground, etc.) resolve to the design tokens. */
+    --radius: 8px;
+  }
+
+  /* ── Dark · Linear-style warm-black ─────────────────────── */
+  :root[data-theme="dark"] {
+    --bg:           oklch(0.155 0.005 270);
+    --surface:      oklch(0.190 0.006 270);
+    --surface-2:    oklch(0.215 0.007 270);
+    --surface-3:    oklch(0.245 0.008 270);
+    --surface-sunk: oklch(0.130 0.005 270);
+
+    --border-subtle: oklch(0.245 0.007 270);
+    --border:        oklch(0.295 0.010 270);
+    --border-strong: oklch(0.380 0.012 270);
+
+    --text:       oklch(0.965 0.005 270);
+    --text-soft:  oklch(0.800 0.010 270);
+    --text-mute:  oklch(0.620 0.012 270);
+    --text-faint: oklch(0.460 0.012 270);
+
+    --accent:        oklch(0.72 0.180 268);
+    --accent-hover:  oklch(0.78 0.180 268);
+    --accent-press:  oklch(0.66 0.180 268);
+    --accent-soft:   oklch(0.30 0.110 268);
+    --accent-soft-2: oklch(0.36 0.130 268);
+    --accent-fg:     oklch(0.155 0.005 270);
+
+    --success:       oklch(0.76 0.150 155);
+    --success-soft:  oklch(0.30 0.075 155);
+    --warning:       oklch(0.82 0.150  85);
+    --warning-soft:  oklch(0.33 0.080  75);
+    --danger:        oklch(0.72 0.180  25);
+    --danger-soft:   oklch(0.32 0.110  25);
+    --info:          oklch(0.74 0.155 245);
+    --info-soft:     oklch(0.30 0.095 245);
+    --violet:        oklch(0.74 0.170 295);
+    --violet-soft:   oklch(0.31 0.110 295);
+    --teal:          oklch(0.78 0.110 195);
+    --teal-soft:     oklch(0.30 0.060 195);
+
+    --shadow-xs: 0 1px 0 0 rgba(0,0,0,0.45);
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.45),
+                 0 0 0 1px rgba(255,255,255,0.04);
+    --shadow-md: 0 6px 14px rgba(0,0,0,0.50),
+                 0 1px 2px  rgba(0,0,0,0.40);
+    --shadow-lg: 0 24px 48px -10px rgba(0,0,0,0.65),
+                 0 8px 20px -6px   rgba(0,0,0,0.50);
+    --focus-ring: 0 0 0 3px oklch(0.72 0.180 268 / 0.30);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body { min-height: 100vh; }
+
+  button { font-family: inherit; cursor: pointer; }
+  input, textarea, select { font-family: inherit; }
+  code, pre, .mono { font-family: var(--mono); }
+
+  ::selection { background: var(--accent-soft-2); color: var(--text); }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

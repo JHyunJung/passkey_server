@@ -20,6 +20,11 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class TenantAttestationPolicy extends TenantScopedEntity {
 
+  /**
+   * All-zero AAGUID — reported by some legacy authenticators that decline to identify themselves.
+   */
+  private static final UUID ZERO_AAGUID = new UUID(0L, 0L);
+
   @Enumerated(EnumType.STRING)
   @Column(name = "mode", nullable = false)
   private AttestationMode mode;
@@ -39,28 +44,51 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
   @Column(name = "mds_strict", nullable = false)
   private boolean mdsStrict;
 
+  /**
+   * Explicit opt-in for null / all-zero AAGUID. Default false = strict. Without this flag, an
+   * authenticator that omits its AAGUID (or reports zeros) is rejected in every mode — closing the
+   * "null AAGUID bypasses DENYLIST/ANY" gap (P0-3).
+   */
+  @Column(name = "allow_zero_aaguid", nullable = false)
+  private boolean allowZeroAaguid;
+
+  /**
+   * Explicit opt-out for syncable / backup-eligible authenticators (P1-4). Default true preserves
+   * existing behaviour — flip OFF for tenants whose compliance regime forbids cloud-synced passkeys
+   * (e.g. iCloud Keychain, Google Password Manager). Enforced in {@code
+   * RegistrationService.finishRegistration} via {@link #acceptsSyncable(boolean)}.
+   */
+  @Column(name = "allow_syncable", nullable = false)
+  private boolean allowSyncable;
+
   private TenantAttestationPolicy(
       UUID id,
       UUID tenantId,
       AttestationMode mode,
       String allowed,
       String denied,
-      boolean mdsStrict) {
+      boolean mdsStrict,
+      boolean allowZeroAaguid,
+      boolean allowSyncable) {
     super(id, tenantId);
     this.mode = mode;
     this.allowedAaguids = allowed;
     this.deniedAaguids = denied;
     this.mdsStrict = mdsStrict;
+    this.allowZeroAaguid = allowZeroAaguid;
+    this.allowSyncable = allowSyncable;
   }
 
   public static TenantAttestationPolicy permissive(UUID tenantId) {
     return new TenantAttestationPolicy(
-        UUID.randomUUID(), tenantId, AttestationMode.ANY, null, null, false);
+        UUID.randomUUID(), tenantId, AttestationMode.ANY, null, null, false, false, true);
   }
 
   public boolean accepts(UUID aaguid) {
-    if (mode == AttestationMode.ANY || aaguid == null) {
-      return mode != AttestationMode.ALLOWLIST;
+    boolean isNullOrZero = aaguid == null || ZERO_AAGUID.equals(aaguid);
+    if (isNullOrZero) {
+      // Closes the legacy bypass — every mode requires explicit opt-in to accept null/zero.
+      return allowZeroAaguid;
     }
     Set<UUID> allowed = parse(allowedAaguids);
     Set<UUID> denied = parse(deniedAaguids);
@@ -69,6 +97,17 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
       case ALLOWLIST -> allowed.contains(aaguid);
       case DENYLIST -> !denied.contains(aaguid);
     };
+  }
+
+  /**
+   * Whether the tenant accepts syncable / backup-eligible passkeys. Caller is the registration
+   * service; combined with {@link #accepts(UUID)} for the AAGUID dimension.
+   */
+  public boolean acceptsSyncable(boolean credentialBackupEligible) {
+    if (!credentialBackupEligible) {
+      return true;
+    }
+    return allowSyncable;
   }
 
   private Set<UUID> parse(String csv) {
@@ -87,11 +126,15 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
       AttestationMode mode,
       java.util.List<String> allowed,
       java.util.List<String> denied,
-      boolean mdsStrict) {
+      boolean mdsStrict,
+      boolean allowZeroAaguid,
+      boolean allowSyncable) {
     this.mode = mode;
     this.allowedAaguids = csvOrNull(allowed);
     this.deniedAaguids = csvOrNull(denied);
     this.mdsStrict = mdsStrict;
+    this.allowZeroAaguid = allowZeroAaguid;
+    this.allowSyncable = allowSyncable;
   }
 
   private static String csvOrNull(java.util.List<String> list) {

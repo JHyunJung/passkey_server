@@ -1,12 +1,14 @@
 package com.crosscert.passkey.admin.controller;
 
 import com.crosscert.passkey.admin.security.AdminAuthz;
+import com.crosscert.passkey.audit.service.AuditAggregationService;
 import com.crosscert.passkey.common.response.ApiResponse;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
+import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -16,9 +18,13 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/admin/tenants/{tenantId}/funnel")
+@RequiredArgsConstructor
+@Tag(
+    name = "Admin · Funnel",
+    description = "Registration / authentication ceremony funnel counts derived from audit log.")
 public class AdminFunnelController {
 
-  @PersistenceContext EntityManager em;
+  private final AuditAggregationService auditAgg;
 
   public record FunnelView(
       long registrationStarted,
@@ -28,7 +34,9 @@ public class AdminFunnelController {
 
   @GetMapping
   @Transactional(readOnly = true)
-  @SuppressWarnings("unchecked")
+  @Operation(
+      summary = "Funnel counts",
+      description = "Defaults to last 7 days when from/to are omitted.")
   public ApiResponse<FunnelView> get(
       @PathVariable UUID tenantId,
       @RequestParam(required = false) OffsetDateTime from,
@@ -38,31 +46,17 @@ public class AdminFunnelController {
     OffsetDateTime fromTs = from == null ? OffsetDateTime.now().minusDays(7) : from;
     OffsetDateTime toTs = to == null ? OffsetDateTime.now() : to;
 
-    var counts =
-        (java.util.List<Object[]>)
-            em.createNativeQuery(
-                    """
-                    SELECT event_type, count(*)
-                      FROM passkey.audit_log
-                     WHERE tenant_id = :tenantId
-                       AND created_at >= :fromTs
-                       AND created_at <  :toTs
-                     GROUP BY event_type
-                    """)
-                .setParameter("tenantId", tenantId)
-                .setParameter("fromTs", fromTs)
-                .setParameter("toTs", toTs)
-                .getResultList();
+    Map<String, Long> byType = auditAgg.countByType(tenantId, fromTs, toTs);
 
-    Map<String, Long> byType = new java.util.HashMap<>();
-    for (Object[] row : counts) {
-      byType.put((String) row[0], ((Number) row[1]).longValue());
-    }
+    // P2-3: dedicated start events now exist — fall back to the completion count for tenants
+    // that pre-date the change so the funnel never reports started < completed (which would be a
+    // negative drop-off and confuse the dashboard).
     long regDone = byType.getOrDefault("CREDENTIAL_REGISTERED", 0L);
     long authOk = byType.getOrDefault("CREDENTIAL_AUTHENTICATED", 0L);
+    long regStarted = Math.max(byType.getOrDefault("REGISTRATION_OPTIONS_REQUESTED", 0L), regDone);
+    long authAttempted =
+        Math.max(byType.getOrDefault("AUTHENTICATION_OPTIONS_REQUESTED", 0L), authOk);
 
-    // Without a separate "options started" event we approximate started == completed; M5 hardening
-    // will introduce explicit ceremony-start audit events to compute drop-off accurately.
-    return ApiResponse.ok(new FunnelView(regDone, regDone, authOk, authOk));
+    return ApiResponse.ok(new FunnelView(regStarted, regDone, authAttempted, authOk));
   }
 }

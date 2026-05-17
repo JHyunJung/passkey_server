@@ -17,3 +17,8 @@ passkey:
     enabled: false
   jwt:
     secret: test-secret-please-ignore-this-is-32bytes-or-more
+  mds:
+    # Integration tests don't ship the FIDO Alliance root CA in the classpath — keep MDS off so
+    # bean wiring doesn't fail. RegistrationService tests cover the MDS-strict path with their own
+    # mocked provider where needed.
+    enabled: false

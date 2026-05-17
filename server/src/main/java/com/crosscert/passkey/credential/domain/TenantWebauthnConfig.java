@@ -40,6 +40,24 @@ public class TenantWebauthnConfig extends TenantScopedEntity {
   @Column(name = "attestation_conveyance", nullable = false)
   private AttestationConveyance attestationConveyance;
 
+  /**
+   * WebAuthn {@code residentKey} requirement embedded in the registration options. {@code REQUIRED}
+   * also flips {@code requireResidentKey=true} for the legacy boolean flag, ensuring username-less
+   * authentication actually has a discoverable credential to surface.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "resident_key", nullable = false)
+  private ResidentKeyPolicy residentKey;
+
+  /**
+   * CTAP2 {@code credProtect} extension level sent with registration options. {@code NONE} omits
+   * the extension; the others map to the WebAuthn spec values for credentialProtectionPolicy.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "cred_protect", nullable = false)
+  private CredProtectPolicy credProtect;
+
+  @SuppressWarnings("checkstyle:ParameterNumber")
   private TenantWebauthnConfig(
       UUID id,
       UUID tenantId,
@@ -48,7 +66,9 @@ public class TenantWebauthnConfig extends TenantScopedEntity {
       String origins,
       int timeoutMs,
       UserVerificationPolicy userVerification,
-      AttestationConveyance attestationConveyance) {
+      AttestationConveyance attestationConveyance,
+      ResidentKeyPolicy residentKey,
+      CredProtectPolicy credProtect) {
     super(id, tenantId);
     this.rpId = rpId;
     this.rpName = rpName;
@@ -56,6 +76,8 @@ public class TenantWebauthnConfig extends TenantScopedEntity {
     this.timeoutMs = timeoutMs;
     this.userVerification = userVerification;
     this.attestationConveyance = attestationConveyance;
+    this.residentKey = residentKey;
+    this.credProtect = credProtect;
   }
 
   public static TenantWebauthnConfig create(
@@ -68,7 +90,9 @@ public class TenantWebauthnConfig extends TenantScopedEntity {
         String.join(",", origins),
         60_000,
         UserVerificationPolicy.PREFERRED,
-        AttestationConveyance.NONE);
+        AttestationConveyance.NONE,
+        ResidentKeyPolicy.PREFERRED,
+        CredProtectPolicy.NONE);
   }
 
   public List<String> originList() {
@@ -79,18 +103,23 @@ public class TenantWebauthnConfig extends TenantScopedEntity {
   }
 
   /** Mutates the WebAuthn config in place (admin upsert). */
+  @SuppressWarnings("checkstyle:ParameterNumber")
   public void update(
       String rpId,
       String rpName,
       List<String> origins,
       int timeoutMs,
       UserVerificationPolicy userVerification,
-      AttestationConveyance attestationConveyance) {
+      AttestationConveyance attestationConveyance,
+      ResidentKeyPolicy residentKey,
+      CredProtectPolicy credProtect) {
     this.rpId = rpId;
     this.rpName = rpName;
     this.origins = String.join(",", origins);
     this.timeoutMs = timeoutMs;
     this.userVerification = userVerification;
     this.attestationConveyance = attestationConveyance;
+    this.residentKey = residentKey;
+    this.credProtect = credProtect;
   }
 }

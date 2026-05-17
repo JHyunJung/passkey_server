@@ -11,6 +11,7 @@ import com.crosscert.passkey.credential.api.RegistrationVerifyRequest;
 import com.crosscert.passkey.credential.challenge.CeremonyType;
 import com.crosscert.passkey.credential.challenge.ChallengeRecord;
 import com.crosscert.passkey.credential.challenge.ChallengeStore;
+import com.crosscert.passkey.credential.challenge.WebauthnCeremonyProperties;
 import com.crosscert.passkey.credential.domain.Credential;
 import com.crosscert.passkey.credential.domain.TenantAttestationPolicy;
 import com.crosscert.passkey.credential.domain.TenantWebauthnConfig;
@@ -36,9 +37,11 @@ import com.webauthn4j.metadata.exception.BadStatusException;
 import com.webauthn4j.server.ServerProperty;
 import com.webauthn4j.verifier.exception.TrustAnchorNotFoundException;
 import com.webauthn4j.verifier.exception.VerificationException;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
@@ -52,7 +55,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class RegistrationService {
 
   private static final SecureRandom RNG = new SecureRandom();
-  private static final int CHALLENGE_LEN = 32;
 
   // ES256 (-7), RS256 (-257).
   private static final long COSE_ALG_ES256 = -7;
@@ -66,6 +68,7 @@ public class RegistrationService {
   private final WebAuthnManager nonStrictManager;
   private final ObjectProvider<WebAuthnManager> strictManagerProvider;
   private final AuditService auditService;
+  private final WebauthnCeremonyProperties ceremonyProps;
   private final com.crosscert.passkey.credential.metrics.CeremonyMetrics metrics;
   private final ObjectConverter objectConverter = new ObjectConverter();
   private final AttestedCredentialDataConverter attestedConverter =
@@ -80,6 +83,7 @@ public class RegistrationService {
       @Qualifier("nonStrictWebAuthnManager") WebAuthnManager nonStrictManager,
       @Qualifier("strictWebAuthnManager") ObjectProvider<WebAuthnManager> strictManagerProvider,
       AuditService auditService,
+      WebauthnCeremonyProperties ceremonyProps,
       com.crosscert.passkey.credential.metrics.CeremonyMetrics metrics) {
     this.configService = configService;
     this.policyRepo = policyRepo;
@@ -89,22 +93,40 @@ public class RegistrationService {
     this.nonStrictManager = nonStrictManager;
     this.strictManagerProvider = strictManagerProvider;
     this.auditService = auditService;
+    this.ceremonyProps = ceremonyProps;
     this.metrics = metrics;
   }
 
+  /**
+   * Begins a WebAuthn registration ceremony for {@code externalUserId}. Resolves (or creates) the
+   * {@code TenantUser}, stores a freshly generated challenge in Redis, and returns the options the
+   * browser passes to {@code navigator.credentials.create()}. Caller must already hold the tenant
+   * context (resolved by the API-key filter for RP traffic).
+   */
   @Transactional
   public RegistrationOptionsResponse beginRegistration(String externalUserId, String displayName) {
     TenantWebauthnConfig cfg = configService.requireCurrent();
     TenantUser user = findOrCreateUser(externalUserId, displayName);
 
-    byte[] challenge = randomBytes(CHALLENGE_LEN);
+    byte[] challenge = randomBytes(ceremonyProps.challengeBytes());
     String challengeB64u = Base64UrlCodec.encode(challenge);
-    String userHandle = Base64UrlCodec.encode(user.getId().toString().getBytes());
+    String userHandle =
+        Base64UrlCodec.encode(user.getId().toString().getBytes(StandardCharsets.UTF_8));
 
     ChallengeRecord record =
         new ChallengeRecord(
             challengeB64u, cfg.getTenantId(), user.getId(), CeremonyType.REGISTRATION, userHandle);
     UUID ceremonyId = challengeStore.save(record);
+
+    // P2-3: emit start event so the funnel can measure begin → finish drop-off (synchronous so
+    // that even ceremonies abandoned before finishRegistration leave a trail).
+    auditService.append(
+        AuditEventType.REGISTRATION_OPTIONS_REQUESTED,
+        ActorType.END_USER,
+        user.getId().toString(),
+        "TENANT_USER",
+        user.getId().toString(),
+        java.util.Map.of("ceremonyId", ceremonyId.toString()));
 
     log.info(
         "register.begin tenantId={} tenantUserId={} externalUserId={} ceremonyId={}",
@@ -122,11 +144,41 @@ public class RegistrationService {
             new RegistrationOptionsResponse.PubKeyCredParam("public-key", COSE_ALG_ES256),
             new RegistrationOptionsResponse.PubKeyCredParam("public-key", COSE_ALG_RS256)),
         cfg.getTimeoutMs(),
-        cfg.getAttestationConveyance().name().toLowerCase(),
+        cfg.getAttestationConveyance().name().toLowerCase(Locale.ROOT),
         new RegistrationOptionsResponse.AuthenticatorSelection(
-            cfg.getUserVerification().name().toLowerCase(), "preferred", false));
+            cfg.getUserVerification().name().toLowerCase(Locale.ROOT),
+            cfg.getResidentKey().name().toLowerCase(Locale.ROOT),
+            cfg.getResidentKey()
+                == com.crosscert.passkey.credential.domain.ResidentKeyPolicy.REQUIRED),
+        buildExtensions(cfg));
   }
 
+  /**
+   * Build the WebAuthn extension inputs map. Empty when no tenant policy requires any — Jackson
+   * drops it from the JSON via {@code @JsonInclude(NON_EMPTY)} so legacy clients are unaffected.
+   */
+  private static java.util.Map<String, Object> buildExtensions(
+      com.crosscert.passkey.credential.domain.TenantWebauthnConfig cfg) {
+    java.util.Map<String, Object> ext = new java.util.HashMap<>();
+    if (cfg.getCredProtect() != null
+        && cfg.getCredProtect() != com.crosscert.passkey.credential.domain.CredProtectPolicy.NONE) {
+      ext.put("credentialProtectionPolicy", cfg.getCredProtect().extensionValue());
+      // Spec recommends enforcing the policy server-side as well; the authenticator returns the
+      // applied level in attestation and webauthn4j will surface mismatches as
+      // VerificationException.
+      ext.put("enforceCredentialProtectionPolicy", true);
+    }
+    return ext;
+  }
+
+  /**
+   * Completes a registration ceremony by verifying the attestation, applying the tenant's AAGUID
+   * policy, and persisting the new credential. Throws {@link BusinessException} with the
+   * appropriate {@link ErrorCode} when verification fails ({@code ATTESTATION_INVALID}), MDS trust
+   * is rejected ({@code MDS_TRUST_FAILED} / {@code AUTHENTICATOR_REVOKED}), or the AAGUID is not
+   * allow-listed ({@code AAGUID_NOT_ALLOWED}). The success audit row is written asynchronously
+   * after the transaction commits.
+   */
   @Transactional
   public RegistrationResult finishRegistration(RegistrationVerifyRequest req) {
     TenantWebauthnConfig cfg = configService.requireCurrent();
@@ -248,6 +300,17 @@ public class RegistrationService {
     boolean backupEligible = regData.getAttestationObject().getAuthenticatorData().isFlagBE();
     boolean backupState = regData.getAttestationObject().getAuthenticatorData().isFlagBS();
 
+    if (!policy.acceptsSyncable(backupEligible)) {
+      log.warn(
+          "register.syncable.rejected tenantId={} tenantUserId={} aaguid={} backupEligible={}",
+          cfg.getTenantId(),
+          stored.tenantUserId(),
+          aaguid,
+          backupEligible);
+      metrics.getRegistrationFailure().increment();
+      throw new BusinessException(ErrorCode.SYNCABLE_NOT_ALLOWED);
+    }
+
     Credential credential =
         Credential.create(
             cfg.getTenantId(),
@@ -265,7 +328,7 @@ public class RegistrationService {
     }
     Credential saved = credentialRepo.save(credential);
 
-    auditService.append(
+    auditService.appendAfterCommit(
         AuditEventType.CREDENTIAL_REGISTERED,
         ActorType.END_USER,
         stored.tenantUserId().toString(),

@@ -1,6 +1,8 @@
 package com.crosscert.passkey.credential.api;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public record RegistrationOptionsResponse(
@@ -11,7 +13,12 @@ public record RegistrationOptionsResponse(
     List<PubKeyCredParam> pubKeyCredParams,
     int timeout,
     String attestation,
-    AuthenticatorSelection authenticatorSelection) {
+    AuthenticatorSelection authenticatorSelection,
+    /**
+     * WebAuthn extension inputs (omitted when no tenant policy requires any). Today only the CTAP2
+     * {@code credentialProtectionPolicy} entry is populated.
+     */
+    @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String, Object> extensions) {
 
   public record Rp(String id, String name) {}
 

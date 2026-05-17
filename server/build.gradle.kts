@@ -1,8 +1,12 @@
+import net.ltgt.gradle.errorprone.errorprone
+
 plugins {
     java
+    jacoco
     id("org.springframework.boot") version "3.5.0"
     id("io.spring.dependency-management") version "1.1.7"
     id("com.diffplug.spotless") version "6.25.0"
+    id("net.ltgt.errorprone") version "3.1.0"
 }
 
 group = "com.crosscert.passkey"
@@ -72,21 +76,29 @@ dependencies {
     testCompileOnly("org.projectlombok:lombok")
     testAnnotationProcessor("org.projectlombok:lombok")
 
-    // test
+    // CQ-4: static analysis. Warn-only for now; gating will be enabled once unit-test coverage is
+    // sufficient. Pick error_prone_core 2.27 — last version supporting JDK 17 without ErrorProne
+    // 3.x reliance on JDK 21+ classfile API.
+    errorprone("com.google.errorprone:error_prone_core:2.27.1")
+
+    // test — integration tests connect to the docker-compose Postgres directly (see
+    // IntegrationTestBase); Testcontainers was removed because the docker-java client could not
+    // negotiate the Docker Desktop socket on macOS and we never relied on Testcontainers anyway.
     testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation("org.testcontainers:testcontainers:1.20.4")
-    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
-    testImplementation("org.testcontainers:postgresql:1.20.4")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
     testImplementation("org.assertj:assertj-core")
 }
 
-configurations.all {
-    resolutionStrategy.eachDependency {
-        if (requested.group == "org.testcontainers") {
-            useVersion("1.20.4")
-        }
-    }
+tasks.withType<JavaCompile>().configureEach {
+    options.errorprone.disableWarningsInGeneratedCode.set(true)
+    // Warn-only rollout — disable the highest-noise checks until CQ-2 raises coverage and we have a
+    // stable baseline. Skipped: MissingSummary (Javadoc summaries), JavaTimeDefaultTimeZone (we
+    // pass UTC explicitly), EmptyBlockTag.
+    options.errorprone.disable(
+        "MissingSummary",
+        "EmptyBlockTag",
+        "JavaTimeDefaultTimeZone",
+        "UnusedVariable")
 }
 
 tasks.withType<Test> {
@@ -102,6 +114,19 @@ tasks.withType<Test> {
     System.getenv("DOCKER_HOST")?.let { environment("DOCKER_HOST", it) }
     System.getenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE")?.let {
         environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", it)
+    }
+    finalizedBy("jacocoTestReport")
+}
+
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
     }
 }
 

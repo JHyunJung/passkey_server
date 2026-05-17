@@ -23,3 +23,8 @@
 
 # Logs
 *.log
+
+# Playwright / screenshots / IDE bin
+.playwright-mcp/
+*.png
+**/bin/

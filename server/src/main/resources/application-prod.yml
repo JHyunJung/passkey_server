@@ -4,12 +4,20 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}
     hikari:
-      maximum-pool-size: 20
+      # PF-4: pool size env-tunable. Default 40 chosen for ~1k req/s headroom (1000 × 50ms typical
+      # transaction time = ~50 concurrent connections worst case). Tune via PASSKEY_HIKARI_POOL_MAX
+      # after profiling actual hardware. Audit REQUIRES_NEW transactions and Spring Session lookups
+      # share this pool, so do not undersize.
+      maximum-pool-size: ${PASSKEY_HIKARI_POOL_MAX:40}
       auto-commit: false
   flyway:
     url: ${SPRING_FLYWAY_URL}
     user: ${SPRING_FLYWAY_USER}
     password: ${SPRING_FLYWAY_PASSWORD}
+    # Hard guard against an operator accidentally invoking `flyway clean` on prod — Spring Boot's
+    # default is `false`, but make it explicit so the schema can never be dropped, regardless of
+    # how the Flyway CLI is invoked.
+    clean-disabled: true
     placeholders:
       app_runtime_password: ${SPRING_FLYWAY_PLACEHOLDERS_APP_RUNTIME_PASSWORD}
       app_admin_password: ${SPRING_FLYWAY_PLACEHOLDERS_APP_ADMIN_PASSWORD}
@@ -18,6 +26,14 @@ spring:
       host: ${SPRING_DATA_REDIS_HOST}
       port: ${SPRING_DATA_REDIS_PORT:6379}
       password: ${SPRING_DATA_REDIS_PASSWORD:}
+
+# SEC-6: disable OpenAPI / Swagger UI in prod. Strict default — LB / NetworkPolicy is a second layer
+# of defence, not the only one. Override with PASSKEY_SWAGGER_ENABLED=true if temporarily needed.
+springdoc:
+  api-docs:
+    enabled: ${PASSKEY_SWAGGER_ENABLED:false}
+  swagger-ui:
+    enabled: ${PASSKEY_SWAGGER_ENABLED:false}
 
 management:
   endpoints:
@@ -28,18 +44,30 @@ management:
         # be exposed to the public internet (k8s network policy / VPC private endpoint).
         include: health,info,prometheus
 
+server:
+  servlet:
+    session:
+      cookie:
+        # Cross-site session cookie transmission required for the separate admin console domain.
+        same-site: ${PASSKEY_SESSION_SAME_SITE:none}
+
 passkey:
   admin:
     enabled: ${PASSKEY_ADMIN_ENABLED:true}
+    console-origin: ${PASSKEY_ADMIN_CONSOLE_ORIGIN:https://admin.passkey.example.com}
     datasource:
       url: ${SPRING_DATASOURCE_URL}
       username: app_admin
       password: ${SPRING_FLYWAY_PLACEHOLDERS_APP_ADMIN_PASSWORD}
       hikari:
-        maximum-pool-size: 5
+        maximum-pool-size: ${PASSKEY_HIKARI_ADMIN_POOL_MAX:5}
         auto-commit: false
+  cookie:
+    # Cross-site CSRF cookie transmission required for the separate admin console domain.
+    same-site: ${PASSKEY_COOKIE_SAME_SITE:None}
   jwt:
     issuer: ${PASSKEY_JWT_ISSUER:passkey-platform}
+    # No default — JwtProperties throws at startup if PASSKEY_JWT_SECRET is missing or <32 bytes.
     secret: ${PASSKEY_JWT_SECRET}
     access-ttl-seconds: ${PASSKEY_JWT_ACCESS_TTL:900}
     refresh-ttl-seconds: ${PASSKEY_JWT_REFRESH_TTL:2592000}
@@ -48,14 +76,16 @@ passkey:
     registration-per-minute: ${PASSKEY_RL_REGISTRATION:30}
     authentication-per-minute: ${PASSKEY_RL_AUTHENTICATION:60}
     default-per-minute: ${PASSKEY_RL_DEFAULT:120}
+    admin-login-per-minute: ${PASSKEY_RL_ADMIN_LOGIN:5}
   actuator:
     username: ${PASSKEY_ACTUATOR_USER:actuator}
     password: ${PASSKEY_ACTUATOR_PASSWORD}
   mds:
-    enabled: ${PASSKEY_MDS_ENABLED:false}
+    # Default ON for production — operators MUST mount the FIDO Alliance Global Root CA PEM at the
+    # path below (k8s secret recommended). Without it the BLOB JWT cannot be verified and strict
+    # tenants will fail-closed with MDS_UNAVAILABLE.
+    enabled: ${PASSKEY_MDS_ENABLED:true}
     blob-url: ${PASSKEY_MDS_BLOB_URL:https://mds3.fidoalliance.org/}
-    # Operators must mount the FIDO Alliance Global Root CA PEM at this path (k8s secret /
-    # configmap). Without it the BLOB JWT cannot be verified and strict tenants will fail-closed.
     root-certificate-path: ${PASSKEY_MDS_ROOT_CA:file:/etc/passkey/fido/Global_Sign_Root_CA.pem}
     refresh-cron: ${PASSKEY_MDS_REFRESH_CRON:0 0 4 * * *}
     allow-not-fido-certified: ${PASSKEY_MDS_ALLOW_NON_CERTIFIED:true}

@@ -22,8 +22,8 @@ Crosscert Passkey Server의 내부 구조 문서. **누가** 어떤 데이터를
 
 - **단일 Spring Boot 인스턴스**(stateless, 수평 확장 가능)
 - **PostgreSQL** — 모든 영속 데이터. Row-Level Security로 테넌트 격리.
-- **Redis** — WebAuthn challenge 임시 저장(TTL 5분), rate-limit 카운터.
-- **외부 통신** — 없음. MDS BLOB 통합은 v1.1로 deferral.
+- **Redis** — WebAuthn challenge 임시 저장(TTL 5분), rate-limit 카운터(Lua atomic INCR+EXPIRE), Spring Session, API key revocation pub/sub.
+- **외부 통신** — FIDO MDS3 BLOB (strict tenant 활성 시, 1일 1회 refresh). 그 외 없음.
 
 ---
 
@@ -31,11 +31,13 @@ Crosscert Passkey Server의 내부 구조 문서. **누가** 어떤 데이터를
 
 ```
 com.crosscert.passkey
-├── PasskeyApplication                main()
+├── PasskeyApplication                main(), @EnableScheduling, @EnableConfigurationProperties
+│                                    ({MdsProperties, ApiKeyProperties, WebauthnCeremonyProperties})
 ├── common
 │   ├── response                     ApiResponse, ErrorDetail, FieldError, PageResponse
 │   ├── exception                    ErrorCode (단일 enum), BusinessException, GlobalExceptionHandler
-│   └── filter                       TraceIdFilter
+│   ├── filter                       TraceIdFilter
+│   └── log                          LogSanitiser (forLog: CR/LF strip + truncate, maskEmail)
 ├── tenant
 │   ├── domain                       Tenant, TenantUser, TenantStatus
 │   ├── repository                   *Repository (Spring Data JPA)
@@ -46,44 +48,60 @@ com.crosscert.passkey
 ├── credential                       — M2 WebAuthn
 │   ├── domain                       Credential, TenantWebauthnConfig, TenantAttestationPolicy + enums
 │   ├── api                          REST DTO (RegistrationOptionsResponse, ...)
-│   ├── challenge                    ChallengeStore (Redis), ChallengeRecord, CeremonyType
+│   ├── challenge                    ChallengeStore (Redis, GET+DEL Lua atomic),
+│   │                                ChallengeRecord, CeremonyType,
+│   │                                WebauthnCeremonyProperties (challengeBytes, challengeTtl)
 │   ├── webauthn                     WebAuthnConfig (bean), Base64UrlCodec
 │   ├── service                      RegistrationService, AuthenticationService,
 │   │                                CredentialLifecycleService, TenantWebauthnConfigService
 │   ├── controller                   RegistrationController, AuthenticationController,
 │   │                                CredentialController
 │   ├── repository                   *Repository
-│   └── metrics                      CeremonyMetrics (Micrometer counters)
+│   ├── metrics                      CeremonyMetrics (Micrometer counters)
+│   └── metadata                     MdsProperties, MdsBlobProvider, MdsRefreshScheduler,
+│                                    MdsTrustAnchorRepositoryConfig, MdsDiagController (§10)
 ├── auth                             — M3 Auth
-│   ├── jwt                          JwtProperties, JwtConfig, TokenService (verifyAccess/verifyRefresh),
-│   │                                TokenPair
+│   ├── jwt                          JwtProperties (32+ bytes secret 강제), JwtConfig,
+│   │                                TokenService (verifyAccess/verifyRefresh), TokenPair
 │   └── apikey
 │       ├── domain                   ApiKey, ApiKeyStatus
-│       ├── repository               ApiKeyRepository (findAllByTenantId)
-│       ├── service                  ApiKeyService (issue/verify with Caffeine cache + DUMMY_HASH
-│       │                            timing equalisation; evictByApiKeyId for cache invalidation)
+│       ├── repository               ApiKeyRepository (findAllByTenantId, findByPrefix)
+│       ├── service                  ApiKeyService (issue/verify with Caffeine LoadingCache —
+│       │                            single-flight stampede 방지, DUMMY_HASH timing equalisation,
+│       │                            evictByApiKeyId for cache invalidation),
+│       │                            ApiKeyProperties (Argon2 파라미터, prefix/secret bytes)
 │       ├── resolver                 ApiKeyTenantResolver (X-API-Key 헤더, @Profile local/test/dev only)
 │       ├── security                 ApiKeyAuthenticationFilter (prod 401 보장),
 │       │                            ApiKeyAuthenticationToken
 │       └── cache                    ApiKeyRevocationPublisher (Redis pub/sub),
 │                                    ApiKeyRevocationListenerConfig (peer cache eviction)
-├── ratelimit                        RateLimitProperties, RateLimiter (Redis fixed-window), RateLimitFilter
-├── audit                            — M3 audit log
+├── ratelimit                        RateLimitProperties (registration/authentication/default/
+│                                    adminLogin perMinute), RateLimiter (Redis Lua INCR+EXPIRE
+│                                    atomic), RateLimitFilter (PathClass enum 1회 분류)
+├── audit                            — M3 audit log + 무결성 검증
 │   ├── domain                       AuditEntry (composite PK, partitioned), AuditEventType, ActorType
-│   ├── repository                   AuditEntryRepository
-│   └── service                      AuditService (per-tenant SHA-256 hash chain)
+│   ├── repository                   AuditEntryRepository (findLatestForTenant,
+│   │                                streamForTenantByTime — fetchSize=1000 hint)
+│   └── service                      AuditService (per-tenant SHA-256 hash chain;
+│                                    append / appendAfterCommit (afterCommit + @Async) /
+│                                    appendAsync / verifyIntegrity → ChainVerification record),
+│                                    AuditAsyncConfig (auditExecutor 풀, CallerRunsPolicy),
+│                                    AuditChainScheduler (일별 03:30 UTC 자동 검증,
+│                                    audit.chain.tampered Micrometer counter)
 ├── admin                            — M4 Admin Console backend
 │   ├── domain                       AdminUser, AdminRole, AdminStatus
 │   ├── repository                   AdminUserRepository
 │   ├── security                     AdminPrincipal, AdminUserDetailsService,
 │   │                                AdminAuthenticationSuccessHandler, JsonLoginAuthenticationFilter,
-│   │                                AdminSecurityConfig (admin chain Order 1 + rp chain Order 2 with
-│   │                                ApiKeyAuthenticationFilter + public chain Order 3 + actuator
-│   │                                chain Order 4 basic auth), AdminAuthz, ActuatorUserConfig
+│   │                                AdminSecurityConfig (4 chains: admin Order 1 + rp Order 2 +
+│   │                                public Order 3 + actuator Order 4; CSRF cookie Secure/
+│   │                                SameSite=Lax/Path=/api/v1/admin; HSTS + CSP +
+│   │                                frame-ancestors + Referrer-Policy 헤더), AdminMdcFilter,
+│   │                                AdminAuthz, ActuatorUserConfig
 │   ├── service                      AdminTenantService (paged listAll)
 │   └── controller                   AdminMe/Tenant/ApiKey/WebauthnConfig/AttestationPolicy/
-│                                    Credential/Audit/Funnel Controllers (모두 page 또는
-│                                    tenant-scoped query)
+│                                    Credential/Audit (list + verify)/Funnel Controllers
+│                                    (모두 page 또는 tenant-scoped query)
 └── infrastructure
     ├── jpa
     │   ├── BaseEntity                id + createdAt + updatedAt
@@ -97,14 +115,16 @@ com.crosscert.passkey
     │   └── DataSourceConfig          runtimeDataSource (@Primary), adminDataSource (@Conditional)
     └── web
         └── WebFilterConfig           TraceIdFilter → TenantResolutionFilter → RateLimitFilter 순서 pin
+                                      (RemoteIpValve는 Tomcat 단계에서 selectable, server.tomcat
+                                      .remoteip 설정 기반)
 ```
 
 ### 패키지 경계 — ArchUnit 강제
 
 `server/src/test/java/.../architecture/PackageArchitectureTest.java`가 PR마다 검증:
 
-1. `common.*`은 도메인 패키지(`tenant`, `auth`, `credential`, `audit`, `admin`) import 금지 — 역방향 의존 차단.
-2. `TenantContextHolder` 접근은 명시된 패키지에서만 (resolver, context, JPA infra, service, admin.security, admin.service, ratelimit, audit.service, challenge, **auth.apikey.security**).
+1. `common.*`은 도메인 패키지(`tenant`, `auth`, `credential`, `audit`, `admin`) import 금지 — 역방향 의존 차단. (`common.log.LogSanitiser`는 utility-only이므로 도메인이 common을 import하는 정방향 의존만 허용.)
+2. `TenantContextHolder` 접근은 명시된 패키지에서만 (`tenant.context`, `tenant.resolver`, `tenant.controller`, `tenant.service`, `credential.service`, `credential.challenge`, `audit.service` — `AuditService.appendAsync` + `AuditChainScheduler` 포함, `ratelimit`, `admin.security`, `admin.service`, `auth.apikey.security`, `infrastructure.jpa`, `infrastructure.jpa.multitenancy`).
 3. **RP-facing** controller는 repository 직접 호출 금지 — service 경유. Admin controller는 예외 (read-through 패턴).
 4. `TenantConnectionProvider`는 `infrastructure.jpa.multitenancy` 외부에서 import 금지.
 5. **`@RequestMapping` 경로는 `/api/v1/rp/**`, `/api/v1/admin/**`, `/_diag/**` 셋 중 하나만 허용**.
@@ -263,7 +283,7 @@ month-partitioned. composite PK `(id, created_at)` — Postgres partitioning 요
 |------|------|
 | `id` | uuid |
 | `tenant_id` | RLS key |
-| `event_type` | enum: TENANT_CREATED, API_KEY_ISSUED/REVOKED, CREDENTIAL_REGISTERED/AUTHENTICATED/REVOKED/RENAMED, SIGNATURE_COUNTER_REGRESSION |
+| `event_type` | enum: TENANT_CREATED, API_KEY_ISSUED/REVOKED, CREDENTIAL_REGISTERED/AUTHENTICATED/REVOKED/RENAMED, SIGNATURE_COUNTER_REGRESSION, ATTESTATION_TRUST_FAILED |
 | `actor_type` | enum: END_USER / RP_API / ADMIN / SYSTEM |
 | `actor_id` | text (tenant_user_id 또는 admin_id) |
 | `subject_type` | text |
@@ -340,17 +360,29 @@ TenantResolutionFilter (HIGHEST_PRECEDENCE + 10)
   ▼
 RateLimitFilter (HIGHEST_PRECEDENCE + 20)
     - /api/* 만 적용. /actuator, /_diag 제외
+    - PathClass enum (REGISTER / AUTHENTICATE / ADMIN_LOGIN / DEFAULT)으로 URI 1회 분류
     - Bucket key는 보통 tenantId 기반, /api/v1/admin/auth/login 만 source IP 기반 (5/min)
-    - Redis 카운터 INCR, 60초 TTL
+    - Redis Lua INCR+EXPIRE atomic 단일 round-trip (75초 TTL)
     - 초과 시 BusinessException(R001) → 429
+    - 실제 client IP는 Tomcat RemoteIpValve가 X-Forwarded-For/X-Forwarded-Proto 기반으로 치환
+      (server.forward-headers-strategy=framework, internal-proxies CIDR로 LB 신뢰)
   │
   ▼
 Spring Security FilterChain (4 chains by URL, Order 1~4)
-    - Order 1 — /api/v1/admin/**  → 세션 쿠키 (Spring Session Redis) + CSRF + form login
+    - Order 1 — /api/v1/admin/**  → 세션 쿠키 (Spring Session Redis, Secure/HttpOnly/SameSite=Lax/
+                                    Path=/api/v1/admin) + CSRF (cookie Secure/SameSite=Lax/
+                                    HttpOnly=false for SPA) + form login
+                                    + 헤더: HSTS, CSP(default-src 'none'+frame-ancestors 'none'+
+                                    base-uri 'none'+form-action 'self'), X-Frame-Options=DENY,
+                                    Referrer-Policy=strict-origin-when-cross-origin
     - Order 2 — /api/v1/rp/**     → ApiKeyAuthenticationFilter (X-API-Key + Argon2 verify)
                                     → 미인증/잘못된 키 → 401 A005
+                                    + 헤더: HSTS, CSP(default-src 'none'+frame-ancestors 'none'),
+                                    Referrer-Policy=no-referrer
     - Order 3 — /actuator/health, /info, /_diag, /v3/api-docs, /swagger-ui — permit all
-    - Order 4 — /actuator/**       → HTTP basic, hasRole(ACTUATOR)
+                                    (prod에서는 springdoc.api-docs.enabled=false로 swagger 차단)
+                                    + 헤더: HSTS + X-Frame-Options=DENY + Referrer-Policy=no-referrer
+    - Order 4 — /actuator/**       → HTTP basic, hasRole(ACTUATOR), 헤더는 Order 2와 동일
   │
   ▼
 Controller → Service (@Transactional)
@@ -409,7 +441,9 @@ SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
      │     ❌ false → AAGUID_NOT_ALLOWED (P008)
      ├─ AttestedCredentialDataConverter.convert(acd) → bytes로 직렬화
      ├─ Credential.create(...) → DB insert (RLS 적용, @PrePersist가 tenant_id 자동 set)
-     ├─ AuditService.append(CREDENTIAL_REGISTERED) → audit_log
+     ├─ AuditService.appendAfterCommit(CREDENTIAL_REGISTERED)
+     │     → ceremony txn commit 후 auditExecutor 풀에서 비동기 append
+     │     → 실패 케이스(ATTESTATION_TRUST_FAILED 등)는 동기 append로 컴플라이언스 보존
      └─ CeremonyMetrics.registrationSuccess.increment()
   │
   ▼  201 { credentialDbId, credentialId, aaguid }
@@ -454,7 +488,8 @@ SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
      │       → metrics.signatureCounterRegression.increment()
      ├─ TokenService.issue(tenantId, tenantUserId, externalUserId)
      │     → JWT access (15분) + refresh (30일), HS256
-     ├─ AuditService.append(CREDENTIAL_AUTHENTICATED)
+     ├─ AuditService.appendAfterCommit(CREDENTIAL_AUTHENTICATED)
+     │     → afterCommit 비동기; counter regression 등 실패는 동기 append 유지
      └─ metrics.authenticationSuccess.increment()
   │
   ▼  200 { credentialDbId, tenantUserId, accessToken, refreshToken, accessExpiresIn, signatureCounter }
@@ -507,6 +542,17 @@ SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
   │
   ▼  201 { id, plaintext: "pk_aB3xY7Q9.<secret>", prefix, name }
      ⚠️ plaintext는 이 응답에서만 노출. 콘솔이 사용자에게 "지금만 복사하세요" 표시 필요.
+
+  ④ GET /api/v1/admin/tenants/{tenantId}/audit-logs/verify?from=...&to=...
+     ▼  AdminAuditController.verify()
+        ├─ AdminAuthz.requireTenantAccess(tenantId)
+        └─ AuditService.verifyIntegrity(tenantId, from, to)
+              → AuditEntryRepository.streamForTenantByTime (fetchSize=1000 hint)
+              → 각 row의 SHA-256 hash chain 재계산 후 stored row_hash / prev_hash 비교
+              → ChainVerification { verifiedRows, tamperedEntryIds[] }
+     ▼  200 { tenantId, from, to, verifiedRows, tamperedEntryIds }
+     `AuditChainScheduler`가 매일 03:30 UTC에 동일 로직을 모든 tenant에 자동 실행 →
+     tampered != [] 시 audit.chain.tampered Micrometer counter + ERROR 로그.
 ```
 
 ---
@@ -526,10 +572,13 @@ SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
 9. **URL prefix `/api/v1/rp/`, `/api/v1/admin/`, `/_diag/` 세 그룹만 허용** — ArchUnit 강제.
 10. **`ErrorCode`는 단일 enum + 도메인 prefix(C/A/T/P/R/D/M) + 3자리 번호**. 추가 시 prefix 규약 유지.
 11. **`Credential.updateSignatureCounter`만이 signature counter 변경 진입점**. 단조 증가 검사를 우회하지 말 것. 단위 테스트 `CredentialSignatureCounterTest`가 4개 시나리오로 강제.
-12. **API key의 plaintext는 DB에 절대 저장 안 됨**. Argon2id hash만 보관. `ApiKeyService.verify`는 `DUMMY_HASH`로 항상 같은 시간 소비 (timing attack 방어).
-13. **audit hash chain은 per-tenant + `pg_advisory_xact_lock`으로 직렬화**. 같은 tenant의 concurrent ceremony가 chain fork를 일으키지 않음.
-14. **JWT 검증은 `verifyAccess` / `verifyRefresh` 둘 중 하나로 명시 호출**. `typ` claim이 안 맞으면 INVALID_TOKEN — refresh 토큰을 access처럼 쓰는 혼동 차단.
+12. **API key의 plaintext는 DB에 절대 저장 안 됨**. Argon2id hash만 보관. `ApiKeyService.verify`는 `DUMMY_HASH`로 항상 같은 시간 소비 (timing attack 방어). 캐시는 Caffeine `LoadingCache` single-flight — 동일 키 동시 요청에서도 Argon2 verify 1회만 실행.
+13. **audit hash chain은 per-tenant + `pg_advisory_xact_lock`으로 직렬화**. 같은 tenant의 concurrent ceremony가 chain fork를 일으키지 않음. 무결성 검증은 `AuditService.verifyIntegrity(tenantId, from, to)` + 일별 `AuditChainScheduler`(03:30 UTC)가 자동 실행 → 위변조 발견 시 `audit.chain.tampered{tenantId}` Micrometer counter + ERROR 로그.
+14. **JWT 검증은 `verifyAccess` / `verifyRefresh` 둘 중 하나로 명시 호출**. `typ` claim이 안 맞으면 INVALID_TOKEN — refresh 토큰을 access처럼 쓰는 혼동 차단. JWT secret은 `JwtProperties`가 부팅 시 ≥32 bytes를 강제 (fail-fast).
 15. **API key 캐시 evict는 `ApiKeyRevocationPublisher.publish`** 거쳐 Redis pub/sub로 모든 인스턴스 동기화.
+16. **Ceremony 성공 audit는 `appendAfterCommit`(afterCommit + `@Async("auditExecutor")`), 실패/규제 audit는 동기 `append`**. 비동기 append 실패는 ERROR 로그로 남으며 일별 scheduler가 chain gap을 발견하면 reconcile 대상이 됨.
+17. **클라이언트 IP는 Tomcat `RemoteIpValve`를 통해서만 신뢰**. `server.forward-headers-strategy=framework` + `server.tomcat.remoteip.internal-proxies` CIDR에 들어있는 hop이 set한 X-Forwarded-For만 client IP로 채택. CIDR 밖에서 들어온 헤더는 무시 → admin-login rate limit이 LB hop 1개로 좁아지지 않음.
+18. **모든 응답에 보안 헤더**. HSTS (`max-age=31_536_000; includeSubDomains`), `X-Frame-Options=DENY`, CSP (`default-src 'none'`+`frame-ancestors 'none'`; admin chain은 `form-action 'self'` 추가), Referrer-Policy. Swagger는 prod에서 `springdoc.api-docs.enabled=false`로 차단되므로 CSP가 깨질 일 없음.
 
 ---
 
@@ -545,17 +594,22 @@ Spring Boot 3.5.0
   ├ Session Redis (spring-session-data-redis) — multi-instance admin sessions
   └ Actuator (health, prometheus)
 
-webauthn4j 0.27.0.RELEASE                ceremony 검증 코어
+webauthn4j 0.27.0.RELEASE                ceremony 검증 코어 (+ webauthn4j-metadata: MDS3)
 JJWT 0.12.6                              JWT 발급/검증 (verifyAccess/verifyRefresh typ enforcement)
-Argon2 (de.mkammerer:argon2-jvm 2.11)    API key 시크릿 해시
-Caffeine                                 ApiKeyService.verify in-memory cache (5분 TTL)
+Argon2 (de.mkammerer:argon2-jvm 2.11)    API key 시크릿 해시 (ApiKeyProperties로 파라미터 외부화)
+Caffeine                                 ApiKeyService LoadingCache (single-flight, 5분 TTL)
 Flyway 11.x (postgresql variant)         스키마 마이그레이션
-springdoc-openapi 2.8.9                  OpenAPI/Swagger UI 자동 생성
+springdoc-openapi 2.8.9                  OpenAPI/Swagger UI 자동 생성 (prod disabled by default)
 Lombok                                   @Getter, @RequiredArgsConstructor, @Slf4j
 
 PostgreSQL JDBC                          runtime
 Testcontainers 1.20.4                    통합 테스트 (현재 사용 안함, docker-compose로 대체)
 ArchUnit 1.3.0                           패키지 경계 검증
+
+빌드/품질 도구
+  Spotless 6.25.0 + Google Java Format 1.22.0   포맷팅 강제 (./gradlew check 에 포함)
+  ErrorProne 2.27.1 (net.ltgt.errorprone 3.1.0) 정적 분석 — 현재 warn-only
+  JaCoCo 0.8.11                                  coverage 리포트 (gate는 미적용)
 ```
 
 ---
@@ -567,14 +621,20 @@ ArchUnit 1.3.0                           패키지 경계 검증
 | `HeaderTenantResolver` (X-Tenant-Id) | ✅ | ✅ | ✅ | ❌ |
 | `ApiKeyTenantResolver` (보조, X-API-Key) | ✅ | ✅ | ✅ | ❌ |
 | `ApiKeyAuthenticationFilter` (Spring Security, X-API-Key) | ✅ | ✅ | ✅ | ✅ |
-| `RateLimitFilter` | ✅ default | ❌ disabled | ✅ | ✅ |
+| `RateLimitFilter` (Lua atomic INCR+EXPIRE) | ✅ default | ❌ disabled | ✅ | ✅ |
 | `/api/v1/admin/auth/login` rate limit | 5/min IP | n/a | 5/min IP | 5/min IP |
 | `/_diag/whoami` | ✅ | ❌ | ✅ | ❌ |
 | `passkey.admin.enabled` (adminDataSource) | false (default) | false | env | env |
 | Spring Session store | redis | none | redis | redis |
+| Session/CSRF cookie `Secure` flag (`PASSKEY_COOKIE_SECURE`) | false | n/a | true | true |
+| Tomcat RemoteIpValve / `forward-headers-strategy` | framework | framework | framework | framework |
 | Actuator `/prometheus`, `/env`, etc. | basic auth | n/a | basic auth | basic auth (+ 네트워크 차단 권고) |
-| JWT secret 검증 | ✅ (모든 profile) | ✅ | ✅ | ✅ fail-fast |
-| Swagger UI | ✅ | n/a | ✅ | ❌ 권고 (LB에서 차단) |
+| JWT secret 검증 (`JwtProperties` ≥32B) | ✅ | ✅ | ✅ | ✅ fail-fast |
+| Swagger UI (`springdoc.swagger-ui.enabled`) | ✅ | n/a | ✅ | ❌ (env로 강제 차단) |
+| Security headers (HSTS/CSP/XFO/Referrer) | ✅ | ✅ | ✅ | ✅ |
+| `AuditChainScheduler` 일별 자동 검증 | ✅ | n/a | ✅ | ✅ (03:30 UTC) |
+| `auditExecutor` 비동기 풀 (성공 ceremony audit) | ✅ | ✅ | ✅ | ✅ |
+| Hikari pool size (`PASSKEY_HIKARI_POOL_MAX`) | 10 | 5 | env (20) | env (20) |
 
 ### 8.1 로깅
 
@@ -595,7 +655,8 @@ ArchUnit 1.3.0                           패키지 경계 검증
 - `apikey.verify.{success,malformed,unknown_prefix,revoked,secret_mismatch}`, `apikey.issued`, `apikey.revocation.{published,received,malformed}`
 - `admin.login.{success,failure}`, `admin.unauthenticated`, `admin.access_denied`, `admin.tenant.created`, `admin.apikey.revoke`, `authz.denied`
 - `rp.unauthorized`, `ratelimit.exceeded`
-- `challenge.{save,consume.miss}`, `audit.append`, `credential.{rename,revoke}`
+- `challenge.{save,consume.miss}`, `audit.append`, `audit.append.async.failed`, `credential.{rename,revoke}`
+- `audit.chain.verify.{start,done,error}`, `audit.chain.tampered` (ERROR — 위변조 의심)
 - `rls.context.{set,unset}` (TRACE / DEBUG)
 - `mds.{provider.constructed,refresh.success,scheduled.refresh.failed,warmup.failed}`, `register.{mds.strict.engaged,mds.unavailable,mds.trust_failed,authenticator.revoked}`
 
@@ -610,7 +671,7 @@ ArchUnit 1.3.0                           패키지 경계 검증
 - `!prod` (local/test/dev): Console만, `com.crosscert.passkey` DEBUG
 - `prod`: Async wrapper로 (1) JSON stdout (k8s/LB 수집용) + (2) RollingFile `logs/passkey-server.log` (100MB×14일, totalSizeCap 5GB, gzip), root INFO, Hibernate SQL WARN
 
-**PII 마스킹**: email은 `sanitiseEmail()` (a***@domain.com), 입력 echo는 `\r\n` 치환 (log injection 방어).
+**PII 마스킹**: 모든 로그 안전 처리는 `common.log.LogSanitiser`로 일원화 — `forLog(s)`는 CR/LF 치환 + 1024자 truncate (log injection + 로그 폭주 방어), `maskEmail(s)`는 `a***@domain.com` 형태로 local-part 마스킹. 도메인 코드는 LogSanitiser를 static import로만 호출.
 
 ---
 
@@ -687,6 +748,7 @@ strict on이지만 서버 `passkey.mds.enabled=false`면 해당 tenant의 regist
 | 매일 refresh | `mds.refresh.success` 로그 1회/일 + `lastFetched` 24h 이내 |
 | Refresh 실패 alert | `mds.scheduled.refresh.failed` ERROR 로그 → Prometheus alert rule |
 | Strict tenant 거절 분포 | audit log `ATTESTATION_TRUST_FAILED` 집계 — 정상 사용자 거절 시 정책 재검토 |
+| Audit chain 무결성 (별개 시스템이지만 운영자 동일) | `audit.chain.verify.done` 로그 매일 1회 + `audit.chain.tampered` counter = 0. 위반 시 즉시 alert + DBA 감사 |
 
 ### 10.5 운영 모드 차이 (§8 표 보완)
 
@@ -707,3 +769,5 @@ strict on이지만 서버 `passkey.mds.enabled=false`면 해당 tenant의 regist
 | 2026-05-15 | Hardening Waves 1~5 | audit chain advisory lock, ApiKeyAuthenticationFilter, JWT typ 검증, prefix collision retry + timing 평탄화, admin upsert 실제 반영, findAll → paged tenant-scoped, Spring Session Redis, actuator chain 분기, Caffeine 캐시 + Redis pub/sub, 도메인 invariant 단위 테스트, V9 funnel index, admin login dedicated rate-limit, log injection 방어 |
 | 2026-05-15 | Observability | 보안/흐름/외부의존성 로그 보강 (`@Slf4j` 14개 확장), MDC 4종 (`traceId/tenantId/adminId/apiKeyId`) — `AdminMdcFilter` + `ApiKeyAuthenticationFilter` 주입, prod logback profile (Async + JSON + RollingFile), §8.1 로깅 컨벤션 문서화 |
 | 2026-05-15 | FIDO MDS3 통합 | `credential.metadata` 패키지 신설 (`MdsBlobProvider` + `MdsRefreshScheduler` + `MdsTrustAnchorRepositoryConfig`), `webauthn4j-metadata:0.27` 의존성, V10 `tenant_attestation_policy.mds_strict` 컬럼, strict `WebAuthnManager` 빈 + `RegistrationService` 분기, ErrorCode 3종(P010 `MDS_TRUST_FAILED`, P011 `MDS_UNAVAILABLE`, P012 `AUTHENTICATOR_REVOKED`) + audit event `ATTESTATION_TRUST_FAILED`, `/_diag/mds-status` |
+| 2026-05-16 | Quality/Performance/Security Hardening | **SEC-1**: `AuditService.verifyIntegrity(tenantId, from, to)` + `AuditEntryRepository.streamForTenantByTime` + `GET /api/v1/admin/tenants/{id}/audit-logs/verify` + 일별 `AuditChainScheduler` (03:30 UTC) + `audit.chain.tampered` Micrometer counter. **SEC-2**: Tomcat `RemoteIpValve` 활성화 (`server.forward-headers-strategy=framework` + `tomcat.remoteip.*`) → admin-login rate limit이 실제 client IP 기반. **SEC-3**: `application.yml`에서 JWT secret default 제거 (prod fail-fast). **SEC-4/5**: CSRF + Spring Session cookie `Secure`/`SameSite=Lax`/`Path=/api/v1/admin` 명시. **SEC-6**: `application-prod.yml`에서 springdoc/swagger-ui disabled. **SEC-7**: HSTS + CSP (`default-src 'none'`) + frame-ancestors + Referrer-Policy를 모든 chain에 적용. **PF-1**: `RateLimiter`를 Lua `INCR+EXPIRE` atomic 단일 round-trip으로 전환. **PF-2**: `AuditService.appendAfterCommit` + `@Async("auditExecutor")` + DLQ 로깅 — ceremony 성공 audit가 hot path에서 비동기. 실패 audit는 동기 유지(컴플라이언스). **PF-3**: `ApiKeyService.verifiedCache`를 `LoadingCache`로 전환 — single-flight로 cache stampede 방지. **PF-4**: Hikari pool size 환경변수화 (`PASSKEY_HIKARI_POOL_MAX`). **PF-5**: `RateLimitFilter.PathClass` enum으로 URI 1회 분류. **CQ-1**: `AdminSecurityConfig.writeError`를 ObjectMapper + `ApiResponse.error` 사용으로 전환. **CQ-3**: TS SDK `unwrap()`에 content-type/JSON 파싱 가드 + `transports.split` null/빈 처리. **CQ-4**: ErrorProne + JaCoCo plugin 도입 (warn-only). **CQ-5**: `ApiKeyProperties`, `WebauthnCeremonyProperties`, `RateLimitProperties.adminLoginPerMinute` 신설로 Argon2 파라미터/challenge length/admin-login limit 외부화. **CQ-6**: `common.log.LogSanitiser` 통합 (forLog + maskEmail). **CQ-7**: Service 핵심 public method Javadoc. unit test 4개 추가 (`AuditServiceVerifyIntegrityTest`, `RateLimiterTest`, `RateLimitFilterTest`, `ApiKeyServiceTest`, `LogSanitiserTest`). Spring Security 6 deprecation: `AntPathRequestMatcher` → `PathPatternRequestMatcher`. |
+| 2026-05-16 | Admin Console v0.1 (`admin/` 신규) | Vite 5 + React 18 + TS + Tailwind + shadcn/ui + TanStack Query 5 + React Router 6 SPA. 별도 도메인 `admin.passkey.example.com` 전제. 기능: PLATFORM_OPERATOR / RP_ADMIN 2 role 자동 라우팅, Tenants list+create, WebAuthn config / AAGUID 정책 (chip 입력 + mdsStrict 토글), API Keys (발급 → plaintext **1회만** 노출 모달 + 체크박스 강제), Credentials (페이지된 목록 + 클라이언트 검색 + revoke), Audit Log (eventType 필터 + payload modal) + **Hash chain Verify 패널** (날짜 범위 → intact 배지 + tampered row highlight), Funnel (windowDays 카드). 서버 호환 변경: `AdminSecurityConfig.cors(...)` + `CorsConfigurationSource` bean (`passkey.admin.console-origin` allowlist), `CookieCsrfTokenRepository` SameSite property화 (`passkey.cookie.same-site`), `server.servlet.session.cookie.same-site` prod=`none`/local=`lax`. `unit/admin/AdminCorsConfigTest` 추가. SPA 빌드 산출물 gzipped ≈185 KB (lazy chunk 9종), nginx 정적 호스팅 (`Dockerfile` multi-stage + `nginx.conf` 보안 헤더). 단위 테스트 8건 (api unwrap + format util), e2e Playwright spec 5종 (M5에서 docker-compose backend wire-up 후 활성화 예정). 설계 문서: `admin-console-docs/admin-console-prd.md` + `admin-console-docs/admin-console-action-plan.md`. 운영 의존: `PASSKEY_ADMIN_CONSOLE_ORIGIN`, `PASSKEY_COOKIE_SAME_SITE`, `PASSKEY_SESSION_SAME_SITE` env 설정 + 운영팀 도메인 정책 (별도 호스트 vs 같은 etld+1) 합의 필요. |

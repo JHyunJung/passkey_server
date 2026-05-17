@@ -112,7 +112,9 @@ export class PasskeyClient {
         allowCredentials: options.allowCredentials.map((c) => ({
           type: "public-key",
           id: base64UrlToBuffer(c.id),
-          transports: c.transports?.split(",") as AuthenticatorTransport[] | undefined,
+          transports: c.transports
+            ? (c.transports.split(",").filter(Boolean) as AuthenticatorTransport[])
+            : undefined,
         })),
       },
     };
@@ -173,14 +175,34 @@ export class PasskeyClient {
   }
 
   private async unwrap<T>(res: Response): Promise<T> {
-    const env = (await res.json()) as ApiEnvelope<T>;
-    if (!env.success || !env.data) {
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      // Non-JSON body — most commonly an HTML error page from a proxy or 5xx without our envelope.
+      // Surface enough context to debug without leaking the entire body into the rejection.
+      const text = await res.text().catch(() => "");
+      throw new PasskeyApiError(
+        `HTTP_${res.status}`,
+        text.trim().slice(0, 256) || res.statusText || "non-JSON response",
+        { status: res.status, contentType },
+      );
+    }
+    let env: ApiEnvelope<T>;
+    try {
+      env = (await res.json()) as ApiEnvelope<T>;
+    } catch (e) {
+      throw new PasskeyApiError(
+        `HTTP_${res.status}`,
+        "invalid JSON response",
+        { status: res.status, cause: e instanceof Error ? e.message : String(e) },
+      );
+    }
+    if (!env.success) {
       throw new PasskeyApiError(
         env.code ?? "UNKNOWN",
         env.message ?? "request failed",
         env,
       );
     }
-    return env.data;
+    return env.data as T;
   }
 }

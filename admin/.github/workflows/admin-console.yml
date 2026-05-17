@@ -1,0 +1,58 @@
+# Move this file to <repo-root>/.github/workflows/ once the admin/ folder lives in the same repo
+# as the rest of the Passkey monorepo. GitHub Actions only resolves workflows from the repository
+# root, not nested directories.
+name: admin-console
+
+on:
+  pull_request:
+    paths:
+      - "admin/**"
+      - ".github/workflows/admin-console.yml"
+  push:
+    branches: [main]
+    paths:
+      - "admin/**"
+      - ".github/workflows/admin-console.yml"
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: admin/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          VITE_API_BASE_URL: https://api.passkey.example.com
+
+  e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin
+    needs: build-test
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: admin/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+        env:
+          # e2e uses the dev server's vite proxy by default; CI should point to a stub server.
+          # Skip until M5 wires the docker-compose stack here.
+          SKIP_E2E: "true"

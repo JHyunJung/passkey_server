@@ -11,6 +11,8 @@ import com.crosscert.passkey.auth.apikey.service.ApiKeyService;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
 import com.crosscert.passkey.common.response.ApiResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.time.OffsetDateTime;
@@ -34,6 +36,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1/admin/tenants/{tenantId}/api-keys")
 @RequiredArgsConstructor
+@Tag(
+    name = "Admin · API Keys",
+    description = "Issue / revoke RP API keys; plaintext is returned exactly once at issue.")
 public class AdminApiKeyController {
 
   private final ApiKeyService apiKeyService;
@@ -50,10 +55,20 @@ public class AdminApiKeyController {
           String name) {}
 
   public record ApiKeyView(
-      UUID id, String prefix, String name, String status, OffsetDateTime createdAt) {
+      UUID id,
+      String prefix,
+      String name,
+      String status,
+      OffsetDateTime createdAt,
+      OffsetDateTime lastUsedAt) {
     static ApiKeyView from(ApiKey k) {
       return new ApiKeyView(
-          k.getId(), k.getPrefix(), k.getName(), k.getStatus().name(), k.getCreatedAt());
+          k.getId(),
+          k.getPrefix(),
+          k.getName(),
+          k.getStatus().name(),
+          k.getCreatedAt(),
+          k.getLastUsedAt());
     }
   }
 
@@ -61,6 +76,7 @@ public class AdminApiKeyController {
 
   @GetMapping
   @Transactional(readOnly = true)
+  @Operation(summary = "List API keys for tenant")
   public ApiResponse<List<ApiKeyView>> list(@PathVariable UUID tenantId) {
     AdminAuthz.requireTenantAccess(tenantId);
     return ApiResponse.ok(
@@ -70,6 +86,10 @@ public class AdminApiKeyController {
   @PostMapping
   @ResponseStatus(HttpStatus.CREATED)
   @Transactional
+  @Operation(
+      summary = "Issue new API key",
+      description =
+          "Returns plaintext exactly once — store immediately in RP secret manager. Server keeps only Argon2id hash.")
   public ApiResponse<IssuedKeyView> issue(
       @PathVariable UUID tenantId, @Valid @RequestBody IssueRequest req) {
     AdminAuthz.requireTenantAccess(tenantId);
@@ -88,6 +108,10 @@ public class AdminApiKeyController {
   @DeleteMapping("/{keyId}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
   @Transactional
+  @Operation(
+      summary = "Revoke API key",
+      description =
+          "Broadcasts revocation via Redis pub/sub so peer instances evict Caffeine cache immediately.")
   public ApiResponse<Void> revoke(@PathVariable UUID tenantId, @PathVariable UUID keyId) {
     AdminAuthz.requireTenantAccess(tenantId);
     ApiKey k =

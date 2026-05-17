@@ -35,3 +35,9 @@ DROP POLICY IF EXISTS audit_log_isolation ON audit_log;
 CREATE POLICY audit_log_isolation ON audit_log
     USING       (tenant_id = passkey.current_tenant_id())
     WITH CHECK  (tenant_id = passkey.current_tenant_id());
+
+-- refresh_token (V11 / Token Hardening) --------------------------------------
+DROP POLICY IF EXISTS refresh_token_isolation ON refresh_token;
+CREATE POLICY refresh_token_isolation ON refresh_token
+    USING       (tenant_id = passkey.current_tenant_id())
+    WITH CHECK  (tenant_id = passkey.current_tenant_id());

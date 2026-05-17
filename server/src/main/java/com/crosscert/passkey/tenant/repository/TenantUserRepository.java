@@ -8,4 +8,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface TenantUserRepository extends JpaRepository<TenantUser, UUID> {
 
   Optional<TenantUser> findByExternalId(String externalId);
+
+  long countByTenantId(UUID tenantId);
 }
