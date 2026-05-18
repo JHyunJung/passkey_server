@@ -37,7 +37,6 @@ import com.webauthn4j.metadata.exception.BadStatusException;
 import com.webauthn4j.server.ServerProperty;
 import com.webauthn4j.verifier.exception.TrustAnchorNotFoundException;
 import com.webauthn4j.verifier.exception.VerificationException;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -110,8 +109,12 @@ public class RegistrationService {
 
     byte[] challenge = randomBytes(ceremonyProps.challengeBytes());
     String challengeB64u = Base64UrlCodec.encode(challenge);
-    String userHandle =
-        Base64UrlCodec.encode(user.getId().toString().getBytes(StandardCharsets.UTF_8));
+    // user.id (WebAuthn 5.4.3): UUID encoded as 16 raw bytes — base64url of the byte form, not
+    // the dashed text form. The textual form is allowed by spec (length ≤ 64) but wastes 20 bytes
+    // and breaks interop with RPs that expect the canonical raw encoding. Existing credentials in
+    // the DB still carry the legacy 36-byte text encoding; user_handle has no server-side lookup
+    // path so the two encodings can coexist until a backfill is scheduled.
+    String userHandle = Base64UrlCodec.encode(uuidToBytes(user.getId()));
 
     ChallengeRecord record =
         new ChallengeRecord(
@@ -128,12 +131,23 @@ public class RegistrationService {
         user.getId().toString(),
         java.util.Map.of("ceremonyId", ceremonyId.toString()));
 
+    List<RegistrationOptionsResponse.ExcludeCredential> excludeCredentials =
+        credentialRepo.findAllByTenantUserId(user.getId()).stream()
+            .filter(Credential::isActive)
+            .map(
+                c ->
+                    new RegistrationOptionsResponse.ExcludeCredential(
+                        "public-key", c.getCredentialId(), c.getTransports()))
+            .toList();
+
     log.info(
-        "register.begin tenantId={} tenantUserId={} externalUserId={} ceremonyId={}",
+        "register.begin tenantId={} tenantUserId={} externalUserId={} ceremonyId={} "
+            + "excludeCredentials={}",
         cfg.getTenantId(),
         user.getId(),
         externalUserId,
-        ceremonyId);
+        ceremonyId,
+        excludeCredentials.size());
 
     return new RegistrationOptionsResponse(
         ceremonyId,
@@ -150,6 +164,7 @@ public class RegistrationService {
             cfg.getResidentKey().name().toLowerCase(Locale.ROOT),
             cfg.getResidentKey()
                 == com.crosscert.passkey.credential.domain.ResidentKeyPolicy.REQUIRED),
+        excludeCredentials,
         buildExtensions(cfg));
   }
 
@@ -187,6 +202,12 @@ public class RegistrationService {
             .consume(req.ceremonyId())
             .orElseThrow(() -> new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND));
     if (stored.ceremonyType() != CeremonyType.REGISTRATION) {
+      // Echoes back as CHALLENGE_NOT_FOUND to the client but log distinctly — this is the
+      // signature of a misrouted client or a deliberate cross-ceremony confusion attempt.
+      log.warn(
+          "register.challenge.wrong_type ceremonyId={} actualType={}",
+          req.ceremonyId(),
+          stored.ceremonyType());
       throw new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND);
     }
 
@@ -202,7 +223,9 @@ public class RegistrationService {
     }
     ServerProperty serverProperty = new ServerProperty(origins, cfg.getRpId(), challenge);
 
-    boolean userVerificationRequired = cfg.getUserVerification().name().equals("REQUIRED");
+    // Only REQUIRED is enforced server-side; PREFERRED/DISCOURAGED are best-effort hints to the
+    // authenticator. See UserVerificationPolicy javadoc.
+    boolean userVerificationRequired = cfg.getUserVerification().isStrictRequired();
     RegistrationParameters params =
         new RegistrationParameters(serverProperty, null, userVerificationRequired, true);
 
@@ -374,5 +397,17 @@ public class RegistrationService {
     byte[] buf = new byte[len];
     RNG.nextBytes(buf);
     return buf;
+  }
+
+  /**
+   * Encodes a UUID as 16 raw bytes for WebAuthn {@code user.id}. Big-endian ordering matches the
+   * canonical UUID byte form (most-significant first) — the same encoding webauthn4j produces when
+   * the authenticator round-trips the handle back to the server.
+   */
+  private static byte[] uuidToBytes(java.util.UUID uuid) {
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(16);
+    buf.putLong(uuid.getMostSignificantBits());
+    buf.putLong(uuid.getLeastSignificantBits());
+    return buf.array();
   }
 }

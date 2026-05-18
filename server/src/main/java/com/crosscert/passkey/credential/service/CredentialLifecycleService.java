@@ -40,6 +40,7 @@ public class CredentialLifecycleService {
   private final TenantAttestationPolicyRepository attestationPolicyRepo;
   private final AuditService auditService;
   private final RefreshTokenRepository refreshTokenRepo;
+  private final com.crosscert.passkey.credential.metrics.CeremonyMetrics metrics;
 
   @Transactional(readOnly = true)
   public List<CredentialView> listForUser(String externalUserId) {
@@ -68,6 +69,35 @@ public class CredentialLifecycleService {
         Map.of("nickname", nickname == null ? "" : nickname));
     log.info(
         "credential.rename tenantId={} tenantUserId={} credentialDbId={}",
+        c.getTenantId(),
+        c.getTenantUserId(),
+        c.getId());
+    return CredentialView.from(c);
+  }
+
+  /**
+   * RP-facing rename: enforces that {@code credentialId} actually belongs to the user identified by
+   * {@code externalUserId}. The RP backend has only been authenticated as a tenant (via X-API-Key);
+   * end-user ownership must be re-checked here or a malicious or buggy caller could mutate another
+   * user's credential within the same tenant (IDOR).
+   *
+   * <p>On mismatch we return {@code CREDENTIAL_NOT_FOUND} rather than a distinct "ownership" code:
+   * leaking the existence of someone else's credential by responding with a different status would
+   * defeat the purpose of the check.
+   */
+  @Transactional
+  public CredentialView renameForUser(UUID credentialId, String externalUserId, String nickname) {
+    Credential c = lookupOwnedBy(credentialId, externalUserId);
+    c.rename(nickname);
+    auditService.append(
+        AuditEventType.CREDENTIAL_RENAMED,
+        ActorType.END_USER,
+        c.getTenantUserId().toString(),
+        "CREDENTIAL",
+        c.getId().toString(),
+        Map.of("nickname", nickname == null ? "" : nickname));
+    log.info(
+        "credential.rename.rp tenantId={} tenantUserId={} credentialDbId={}",
         c.getTenantId(),
         c.getTenantUserId(),
         c.getId());
@@ -261,12 +291,62 @@ public class CredentialLifecycleService {
     revoke(credentialId, CredentialRevokedReason.ADMIN_FORCED);
   }
 
+  /**
+   * RP-facing revoke: same IDOR-defence as {@link #renameForUser}. Always uses {@code USER_REQUEST}
+   * as the revocation reason — the RP-facing API is by definition the end-user dropping their own
+   * key. Admin revoke (with explicit reason) keeps using {@link #revoke(UUID,
+   * CredentialRevokedReason)}.
+   */
+  @Transactional
+  public void revokeForUser(UUID credentialId, String externalUserId) {
+    Credential c = lookupOwnedBy(credentialId, externalUserId);
+    // Tag the actor in the log so the RP-path revocation is grep-distinguishable from admin
+    // revocations sharing the same doRevoke() body (which logs credential.revoke.* generically).
+    log.info(
+        "credential.revoke.rp tenantId={} tenantUserId={} credentialDbId={} externalUserId={}",
+        c.getTenantId(),
+        c.getTenantUserId(),
+        c.getId(),
+        externalUserId);
+    doRevoke(c, CredentialRevokedReason.USER_REQUEST);
+  }
+
   @Transactional
   public void revoke(UUID credentialId, CredentialRevokedReason reason) {
     Credential c =
         credentialRepo
             .findById(credentialId)
             .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
+    doRevoke(c, reason);
+  }
+
+  private Credential lookupOwnedBy(UUID credentialId, String externalUserId) {
+    Credential c =
+        credentialRepo
+            .findById(credentialId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
+    TenantUser owner =
+        tenantUserRepo
+            .findByExternalId(externalUserId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
+    if (!c.getTenantUserId().equals(owner.getId())) {
+      // Deliberately the same error code as "not found" — leaking the existence of another user's
+      // credential would let an attacker enumerate by trial.
+      log.warn(
+          "credential.ownership.mismatch credentialDbId={} requestedExternalUserId={} "
+              + "actualTenantUserId={}",
+          credentialId,
+          externalUserId,
+          c.getTenantUserId());
+      // Counter drives the "sustained IDOR probing" alert. Single mismatches happen during normal
+      // integration testing; a sustained increase points at a buggy RP or a deliberate scan.
+      metrics.getOwnershipMismatches().increment();
+      throw new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND);
+    }
+    return c;
+  }
+
+  private void doRevoke(Credential c, CredentialRevokedReason reason) {
     c.revoke(reason);
     // Burn outstanding refresh tokens of the same end-user — otherwise stale sessions can keep
     // refreshing access tokens after the credential is gone (P0-1 finding).

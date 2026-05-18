@@ -13,16 +13,11 @@ import org.springframework.data.repository.query.Param;
 
 public interface CredentialRepository extends JpaRepository<Credential, UUID> {
 
-  /**
-   * @deprecated Prefer {@link #findByCredentialIdAndTenantId(String, UUID)} for any code path that
-   *     accepts a {@code credentialId} from a client. RLS still gates this query, but explicit
-   *     tenant binding is defense-in-depth — a single mis-set tenant context (or any future use of
-   *     the {@code app_admin} BYPASSRLS role) would otherwise let an attacker who learned another
-   *     tenant's credentialId impersonate that user.
-   */
-  @Deprecated
-  Optional<Credential> findByCredentialId(String credentialId);
-
+  // findByCredentialId(String) intentionally omitted — every code path that accepts a
+  // credentialId from a client MUST bind the tenant explicitly. RLS/VPD still gates the query,
+  // but a mis-set tenant context or any use of the app_admin BYPASS-role would otherwise let an
+  // attacker who learned another tenant's credentialId impersonate that user. Use
+  // findByCredentialIdAndTenantId below.
   Optional<Credential> findByCredentialIdAndTenantId(String credentialId, UUID tenantId);
 
   List<Credential> findAllByTenantUserId(UUID tenantUserId);
@@ -81,10 +76,10 @@ public interface CredentialRepository extends JpaRepository<Credential, UUID> {
   @Modifying
   @Query(
       value =
-          "UPDATE passkey.credential "
+          "UPDATE credential "
               + "   SET tenant_id = :targetTenantId, "
               + "       tenant_user_id = :targetTenantUserId, "
-              + "       updated_at = now() "
+              + "       updated_at = SYSTIMESTAMP "
               + " WHERE id = :credentialId "
               + "   AND tenant_id = :sourceTenantId",
       nativeQuery = true)

@@ -4,60 +4,55 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.crosscert.passkey.integration.support.IntegrationTestBase;
 import java.util.List;
-import java.util.Map;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Drift detection: asserts that every expected tenant-scoped table has ENABLE + FORCE row level
- * security and at least one policy. Any new tenant-scoped table must be added to {@code
- * EXPECTED_TABLES} — or this test fails and the developer is forced to update {@code
- * R__rls_policies.sql}.
+ * Drift detection: asserts that every expected tenant-scoped table has a VPD policy attached. Any
+ * new tenant-scoped table must be added to {@code EXPECTED_TABLES} — or this test fails and the
+ * developer is forced to update {@code R__vpd_policies.sql}.
+ *
+ * <p>Catalog source: {@code USER_POLICIES} (the table owner's view of all VPD policies attached to
+ * objects it owns). The {@code APP_MIGRATOR} user owns the tables, so we run the query as
+ * APP_MIGRATOR-equivalent via the runtime DataSource — Oracle restricts USER_POLICIES to the
+ * current user's objects, so we use ALL_POLICIES filtered by OBJECT_OWNER instead. APP_RUNTIME has
+ * SELECT on ALL_POLICIES via the standard catalog grants.
  */
 class RlsPolicyCatalogTest extends IntegrationTestBase {
 
   /** Update this list when introducing a new tenant-scoped table. */
   private static final List<String> EXPECTED_TABLES =
       List.of(
-          "tenant_user",
-          "tenant_webauthn_config",
-          "credential",
-          "tenant_attestation_policy",
-          "audit_log",
-          "refresh_token");
+          "TENANT_USER",
+          "TENANT_WEBAUTHN_CONFIG",
+          "CREDENTIAL",
+          "TENANT_ATTESTATION_POLICY",
+          "AUDIT_LOG",
+          "REFRESH_TOKEN");
 
   @Autowired DataSource runtimeDataSource;
 
   @Test
-  void all_tenant_scoped_tables_have_force_rls_and_at_least_one_policy() {
+  void all_tenant_scoped_tables_have_a_vpd_policy() {
     JdbcTemplate jdbc = new JdbcTemplate(runtimeDataSource);
 
     for (String table : EXPECTED_TABLES) {
-      Map<String, Object> row =
-          jdbc.queryForMap(
-              """
-              SELECT c.relrowsecurity      AS row_security,
-                     c.relforcerowsecurity AS force_row_security,
-                     (SELECT count(*) FROM pg_policies p
-                       WHERE p.schemaname = 'passkey' AND p.tablename = c.relname) AS policy_count
-                FROM pg_class c
-                JOIN pg_namespace n ON c.relnamespace = n.oid
-               WHERE n.nspname = 'passkey'
-                 AND c.relkind IN ('r', 'p')
-                 AND c.relname = ?
-              """,
+      Integer policyCount =
+          jdbc.queryForObject(
+              "SELECT COUNT(*) FROM ALL_POLICIES "
+                  + "WHERE OBJECT_OWNER = 'APP_MIGRATOR' "
+                  + "  AND OBJECT_NAME = ? "
+                  + "  AND PF_OWNER = 'APP_MIGRATOR' "
+                  + "  AND PACKAGE IS NULL "
+                  + "  AND ENABLE = 'YES'",
+              Integer.class,
               table);
 
-      assertThat(row.get("row_security"))
-          .as("RLS must be ENABLED on %s", table)
-          .isEqualTo(Boolean.TRUE);
-      assertThat(row.get("force_row_security"))
-          .as("RLS must be FORCED on %s", table)
-          .isEqualTo(Boolean.TRUE);
-      assertThat(((Number) row.get("policy_count")).intValue())
-          .as("at least one policy on %s", table)
+      assertThat(policyCount)
+          .as("at least one ENABLED VPD policy on %s", table)
+          .isNotNull()
           .isGreaterThanOrEqualTo(1);
     }
   }

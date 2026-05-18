@@ -27,6 +27,18 @@ export interface RegisterOptions {
   nickname?: string;
 }
 
+/**
+ * Hint to the authenticator that these credentials are already enrolled for the user. The server
+ * derives this list from the user's active credentials and includes it in the registration options
+ * payload. The SDK forwards it to `navigator.credentials.create()` so a duplicate enrolment
+ * attempt surfaces as `InvalidStateError` on the client instead of a server-side conflict.
+ */
+export interface ExcludeCredentialHint {
+  type: string;
+  id: string;
+  transports: string | null;
+}
+
 export interface RegisterResult {
   credentialDbId: string;
   credentialId: string;

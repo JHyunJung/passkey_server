@@ -50,9 +50,9 @@ dependencies {
     runtimeOnly("io.micrometer:micrometer-registry-prometheus")
 
     // db
-    runtimeOnly("org.postgresql:postgresql")
+    runtimeOnly("com.oracle.database.jdbc:ojdbc11:23.3.0.23.09")
     implementation("org.flywaydb:flyway-core")
-    implementation("org.flywaydb:flyway-database-postgresql")
+    implementation("org.flywaydb:flyway-database-oracle")
 
     // webauthn4j — M2 BE-005
     implementation("com.webauthn4j:webauthn4j-core:0.27.0.RELEASE")
@@ -81,7 +81,7 @@ dependencies {
     // 3.x reliance on JDK 21+ classfile API.
     errorprone("com.google.errorprone:error_prone_core:2.27.1")
 
-    // test — integration tests connect to the docker-compose Postgres directly (see
+    // test — integration tests connect to the docker-compose Oracle XE/Free instance directly (see
     // IntegrationTestBase); Testcontainers was removed because the docker-java client could not
     // negotiate the Docker Desktop socket on macOS and we never relied on Testcontainers anyway.
     testImplementation("org.springframework.boot:spring-boot-starter-test")

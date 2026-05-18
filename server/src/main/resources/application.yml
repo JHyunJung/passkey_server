@@ -2,7 +2,9 @@ spring:
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
   jpa:
-    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    # Oracle 19c via Hibernate 6's auto-detecting OracleDialect. 6.6+ no longer requires a version
+    # suffix — the dialect probes server_version on first connection and emits 19c-compatible SQL.
+    database-platform: org.hibernate.dialect.OracleDialect
     hibernate:
       ddl-auto: validate
     # Open-Session-In-View is OFF — every JPA access must run inside an explicit @Transactional
@@ -12,14 +14,23 @@ spring:
     properties:
       hibernate:
         format_sql: false
+        # Tables live in APP_MIGRATOR's schema; runtime sessions connect as APP_RUNTIME /
+        # APP_ADMIN. PUBLIC SYNONYMs make them addressable unqualified at runtime, but Hibernate's
+        # schema validator needs to know the actual owner to read column metadata. Setting
+        # default_schema makes JPA-generated SQL also use unqualified names (which then resolve
+        # through the synonyms) while ddl-auto=validate inspects the correct catalog.
+        default_schema: APP_MIGRATOR
         jdbc:
           time_zone: UTC
   flyway:
     enabled: true
+    # Oracle baseline lives under db/migration/. Legacy PostgreSQL scripts are archived under
+    # db/archive_postgres/ and intentionally outside Flyway's scan path.
     locations: classpath:db/migration
-    schemas: passkey
-    default-schema: passkey
-    create-schemas: true
+    # On Oracle the schema IS the connecting user — APP_MIGRATOR owns all objects. We do NOT set
+    # `schemas`/`default-schema` (those translate to ALTER SESSION SET CURRENT_SCHEMA which would
+    # require the named user to exist beforehand).
+    create-schemas: false
     baseline-on-migrate: false
   session:
     store-type: ${PASSKEY_SESSION_STORE:redis}

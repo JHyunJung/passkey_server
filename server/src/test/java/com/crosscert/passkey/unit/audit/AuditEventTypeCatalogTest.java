@@ -23,4 +23,9 @@ class AuditEventTypeCatalogTest {
             AuditEventType.TENANT_SUSPENDED,
             AuditEventType.TENANT_ACTIVATED);
   }
+
+  @Test
+  void includes_credential_backup_state_changed() {
+    assertThat(AuditEventType.values()).contains(AuditEventType.CREDENTIAL_BACKUP_STATE_CHANGED);
+  }
 }

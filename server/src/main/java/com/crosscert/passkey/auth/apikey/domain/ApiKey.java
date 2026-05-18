@@ -19,11 +19,11 @@ import lombok.NoArgsConstructor;
  */
 @Getter
 @Entity
-@Table(name = "api_key", schema = "passkey")
+@Table(name = "api_key")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ApiKey extends BaseEntity {
 
-  @Column(name = "tenant_id", nullable = false, updatable = false, columnDefinition = "uuid")
+  @Column(name = "tenant_id", nullable = false, updatable = false)
   private UUID tenantId;
 
   @Column(name = "prefix", nullable = false, unique = true, updatable = false)

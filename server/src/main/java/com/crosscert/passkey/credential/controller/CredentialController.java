@@ -1,9 +1,8 @@
 package com.crosscert.passkey.credential.controller;
 
 import com.crosscert.passkey.common.response.ApiResponse;
-import com.crosscert.passkey.credential.api.CredentialRenameRequest;
 import com.crosscert.passkey.credential.api.CredentialView;
-import com.crosscert.passkey.credential.domain.CredentialRevokedReason;
+import com.crosscert.passkey.credential.api.RpCredentialRenameRequest;
 import com.crosscert.passkey.credential.service.CredentialLifecycleService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -33,17 +32,27 @@ public class CredentialController {
     return ApiResponse.ok(lifecycle.listForUser(externalUserId));
   }
 
+  /**
+   * Renames the caller's own credential. {@code externalUserId} is required in the body so the
+   * server can verify within-tenant ownership — RP-facing auth (X-API-Key) only proves the tenant,
+   * not the end user. BREAKING: prior versions accepted only {@code nickname}.
+   */
   @PatchMapping("/{id}")
   public ApiResponse<CredentialView> rename(
-      @PathVariable UUID id, @Valid @RequestBody CredentialRenameRequest req) {
-    return ApiResponse.ok(lifecycle.rename(id, req.nickname()));
+      @PathVariable UUID id, @Valid @RequestBody RpCredentialRenameRequest req) {
+    return ApiResponse.ok(lifecycle.renameForUser(id, req.externalUserId(), req.nickname()));
   }
 
+  /**
+   * Revokes the caller's own credential. {@code externalUserId} is required as a query parameter —
+   * DELETE bodies are unreliable across HTTP clients and proxies. BREAKING: prior versions accepted
+   * a bare {@code DELETE /{id}}.
+   */
   @DeleteMapping("/{id}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  public ApiResponse<Void> revoke(@PathVariable UUID id) {
-    // RP-facing delete is the end user choosing to drop their own passkey.
-    lifecycle.revoke(id, CredentialRevokedReason.USER_REQUEST);
+  public ApiResponse<Void> revoke(
+      @PathVariable UUID id, @RequestParam("externalUserId") String externalUserId) {
+    lifecycle.revokeForUser(id, externalUserId);
     return ApiResponse.ok();
   }
 }

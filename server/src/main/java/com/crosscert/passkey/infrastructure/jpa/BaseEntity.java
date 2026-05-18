@@ -21,7 +21,10 @@ import lombok.Getter;
 public abstract class BaseEntity {
 
   @Id
-  @Column(name = "id", columnDefinition = "uuid", updatable = false, nullable = false)
+  // Oracle stores UUIDs as RAW(16). The dialect maps java.util.UUID ↔ RAW automatically once the
+  // explicit "uuid" columnDefinition (Postgres-only) is removed, so ddl-auto=validate is happy
+  // with the V1__oracle_baseline.sql DDL.
+  @Column(name = "id", updatable = false, nullable = false)
   private UUID id;
 
   @Column(name = "created_at", nullable = false, updatable = false)

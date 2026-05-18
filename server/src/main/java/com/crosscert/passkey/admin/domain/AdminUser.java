@@ -19,12 +19,12 @@ import lombok.NoArgsConstructor;
  */
 @Getter
 @Entity
-@Table(name = "admin_user", schema = "passkey")
+@Table(name = "admin_user")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class AdminUser extends BaseEntity {
 
   /** NULL for PLATFORM_OPERATOR. */
-  @Column(name = "tenant_id", columnDefinition = "uuid")
+  @Column(name = "tenant_id")
   private UUID tenantId;
 
   @Column(name = "email", nullable = false, unique = true)

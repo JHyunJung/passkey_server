@@ -1,24 +1,34 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: passkey-postgres
+  oracle:
+    # gvenzl/oracle-free is the community-maintained slim image for Oracle Database Free 23ai.
+    # It runs in 19c-compatible mode for our DDL (no 23ai-only features used). Free image, no
+    # Oracle Container Registry login required. FREEPDB1 is the default PDB service name.
+    image: gvenzl/oracle-free:23-slim-faststart
+    container_name: passkey-oracle
     environment:
-      POSTGRES_DB: passkey
-      POSTGRES_USER: app_migrator
-      POSTGRES_PASSWORD: change_me_local
+      # Single password applied to SYS / SYSTEM / PDBADMIN. Sufficient for local dev; production
+      # uses a managed Oracle instance with proper IAM.
+      ORACLE_PASSWORD: change_me_local
+      # The image creates this app user inside FREEPDB1 on first boot. We use it as APP_MIGRATOR
+      # (the Flyway owner). The PDB exists either way; APP_PASSWORD only affects APP_USER.
+      APP_USER: APP_MIGRATOR
+      APP_USER_PASSWORD: change_me_migrator
     ports:
-      - "5432:5432"
+      - "1521:1521"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    command:
-      - postgres
-      - -c
-      - log_statement=all
+      - oracledata:/opt/oracle/oradata
+      # Init scripts run as SYSDBA on the FREEPDB1 PDB after the container is healthy. Used to
+      # grant APP_MIGRATOR the privileges Flyway needs to create users + VPD policies.
+      - ./docker/oracle-init:/container-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app_migrator -d passkey"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      # sqlplus -L: non-interactive; fails fast if listener isn't accepting connections.
+      test:
+        - "CMD-SHELL"
+        - "echo 'select 1 from dual;' | sqlplus -L -S system/change_me_local@//localhost:1521/FREEPDB1 | grep -q 1"
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
 
   redis:
     image: redis:7-alpine
@@ -38,4 +48,4 @@ services:
       retries: 10
 
 volumes:
-  pgdata:
+  oracledata:

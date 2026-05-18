@@ -6,6 +6,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
+import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 import java.io.Serializable;
 import java.time.OffsetDateTime;
@@ -14,29 +15,27 @@ import java.util.UUID;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
 
 /**
- * Append-only audit row. Composite PK (id, createdAt) — required by Postgres partitioning by
- * created_at.
+ * Append-only audit row. Composite PK (id, createdAt) — required by Oracle interval partitioning on
+ * created_at (the partitioning key must be part of the primary key for local indexes).
  */
 @Getter
 @Entity
-@Table(name = "audit_log", schema = "passkey")
+@Table(name = "audit_log")
 @IdClass(AuditEntry.Pk.class)
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class AuditEntry {
 
   @Id
-  @Column(name = "id", columnDefinition = "uuid", updatable = false, nullable = false)
+  @Column(name = "id", updatable = false, nullable = false)
   private UUID id;
 
   @Id
   @Column(name = "created_at", nullable = false, updatable = false)
   private OffsetDateTime createdAt;
 
-  @Column(name = "tenant_id", nullable = false, updatable = false, columnDefinition = "uuid")
+  @Column(name = "tenant_id", nullable = false, updatable = false)
   private UUID tenantId;
 
   @Enumerated(EnumType.STRING)
@@ -56,8 +55,12 @@ public class AuditEntry {
   @Column(name = "subject_id", updatable = false)
   private String subjectId;
 
-  @JdbcTypeCode(SqlTypes.JSON)
-  @Column(name = "payload", updatable = false, columnDefinition = "jsonb")
+  // Oracle 19c has no native JSON type. Stored as CLOB with a DDL-level `CHECK (payload IS JSON)`
+  // constraint (see V1__oracle_baseline.sql) that gates malformed JSON at insert time. The CLOB
+  // round-trips as String via ojdbc11's CLOB-as-string mode (auto-enabled by Hibernate when the
+  // field type is String).
+  @Lob
+  @Column(name = "payload", updatable = false, columnDefinition = "CLOB")
   private String payload;
 
   @Column(name = "prev_hash", updatable = false)

@@ -37,9 +37,11 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * Append-only audit logger with per-tenant SHA-256 hash chain.
  *
  * <p>{@code REQUIRES_NEW} ensures audit rows are durable even if the outer ceremony transaction
- * rolls back. {@code pg_advisory_xact_lock(hashtext(tenantId))} serialises {@code append} calls per
- * tenant inside Postgres so concurrent ceremonies cannot read the same {@code prev_hash} and fork
- * the chain.
+ * rolls back. Per-tenant serialisation is achieved via {@code DBMS_LOCK.ALLOCATE_UNIQUE} (one named
+ * lock per tenant) plus {@code DBMS_LOCK.REQUEST} in eXclusive mode with {@code
+ * release_on_commit=TRUE} — the Oracle equivalent of the previous {@code
+ * pg_advisory_xact_lock(hashtext(tenantId))} pattern. Concurrent ceremonies for the same tenant
+ * block on the same lock handle and therefore observe a consistent {@code prev_hash}.
  */
 @Slf4j
 @Service
@@ -61,10 +63,11 @@ public class AuditService {
       Map<String, Object> payload) {
     UUID tenantId = TenantContextHolder.required().tenantId();
 
-    // Per-tenant serialisation. The advisory lock is released automatically at COMMIT/ROLLBACK.
-    em.createNativeQuery("SELECT pg_advisory_xact_lock(hashtext(?1))")
-        .setParameter(1, tenantId.toString())
-        .getSingleResult();
+    // Per-tenant serialisation. Lock handle is per-tenant ("passkey_audit_<uuid>"), so ceremonies
+    // for different tenants do not contend. release_on_commit=TRUE means the lock is dropped at
+    // the end of this @Transactional(REQUIRES_NEW) boundary — the Oracle counterpart to PG's
+    // pg_advisory_xact_lock auto-release behavior.
+    acquireTenantAuditLock(tenantId);
 
     String payloadJson;
     try {
@@ -199,6 +202,45 @@ public class AuditService {
       List<UUID> tamperedEntryIds) {
     public boolean intact() {
       return tamperedEntryIds.isEmpty();
+    }
+  }
+
+  /**
+   * Per-tenant serialisation via Oracle DBMS_LOCK. ALLOCATE_UNIQUE turns the lockname into a
+   * VARCHAR2 handle scoped to this session; REQUEST X_MODE (6) blocks competing sessions; timeout
+   * 10s keeps a runaway ceremony from blocking other tenants' append calls indefinitely.
+   *
+   * <p>Implementation note: Hibernate's {@code createNativeQuery} does not bind OUT parameters on
+   * arbitrary PL/SQL blocks, so we use {@link org.hibernate.Session#doWork(Work)} to run the
+   * anonymous block as a JDBC {@link java.sql.CallableStatement} where we can register the OUT
+   * parameter and read the return code directly.
+   */
+  private void acquireTenantAuditLock(UUID tenantId) {
+    String lockName = "passkey_audit_" + tenantId;
+    int rc =
+        em.unwrap(org.hibernate.Session.class)
+            .doReturningWork(
+                connection -> {
+                  String sql =
+                      "DECLARE handle VARCHAR2(128); BEGIN "
+                          + "DBMS_LOCK.ALLOCATE_UNIQUE(lockname => ?, lockhandle => handle); "
+                          + "? := DBMS_LOCK.REQUEST("
+                          + "  lockhandle => handle, lockmode => DBMS_LOCK.X_MODE, "
+                          + "  timeout => 10, release_on_commit => TRUE); "
+                          + "END;";
+                  try (java.sql.CallableStatement cs = connection.prepareCall(sql)) {
+                    cs.setString(1, lockName);
+                    cs.registerOutParameter(2, java.sql.Types.INTEGER);
+                    cs.execute();
+                    return cs.getInt(2);
+                  }
+                });
+    // rc: 0=success, 1=timeout, 2=deadlock, 3=parameter error, 4=already own lock,
+    // 5=illegal handle. Accept 0 (acquired) and 4 (re-entrancy — same session).
+    if (rc != 0 && rc != 4) {
+      log.error("audit.lock.failed tenantId={} rc={}", tenantId, rc);
+      throw new BusinessException(
+          ErrorCode.INTERNAL_SERVER_ERROR, "audit lock acquisition failed rc=" + rc);
     }
   }
 

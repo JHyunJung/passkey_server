@@ -13,7 +13,7 @@ import lombok.NoArgsConstructor;
 
 @Getter
 @Entity
-@Table(name = "tenant", schema = "passkey")
+@Table(name = "tenant")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Tenant extends BaseEntity {
 

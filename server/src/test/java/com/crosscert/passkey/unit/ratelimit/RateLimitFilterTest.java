@@ -130,14 +130,28 @@ class RateLimitFilterTest {
   }
 
   @Test
-  void authentication_path_uses_authentication_limit() throws Exception {
+  void authentication_options_path_uses_authentication_limit() throws Exception {
+    TenantContextHolder.set(new TenantContext(TENANT_ID, "test"));
+    when(limiter.tryAcquire(anyString(), anyInt())).thenReturn(true);
+    MockHttpServletRequest req = mockRequest("/api/v1/rp/passkeys/authenticate/options");
+
+    filter.doFilter(req, new MockHttpServletResponse(), chain);
+
+    verify(limiter, times(1)).tryAcquire(TENANT_ID + ":authenticate", 60);
+  }
+
+  @Test
+  void authentication_verify_path_uses_stricter_credential_auth_verify_limit() throws Exception {
+    // The verify step is the costly half of the ceremony and the only path that admits a
+    // credentialId guess — it gets its own stricter per-tenant bucket so a tenant under its
+    // global authenticate quota still can't pound a single verify endpoint.
     TenantContextHolder.set(new TenantContext(TENANT_ID, "test"));
     when(limiter.tryAcquire(anyString(), anyInt())).thenReturn(true);
     MockHttpServletRequest req = mockRequest("/api/v1/rp/passkeys/authenticate/verify");
 
     filter.doFilter(req, new MockHttpServletResponse(), chain);
 
-    verify(limiter, times(1)).tryAcquire(TENANT_ID + ":authenticate", 60);
+    verify(limiter, times(1)).tryAcquire(TENANT_ID + ":credential-auth-verify", 10);
   }
 
   private MockHttpServletRequest mockRequest(String uri) {
