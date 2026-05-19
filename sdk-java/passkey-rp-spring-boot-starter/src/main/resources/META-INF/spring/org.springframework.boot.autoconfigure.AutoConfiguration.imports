@@ -1,0 +1,4 @@
+com.crosscert.passkey.rp.starter.PasskeyAutoConfiguration
+com.crosscert.passkey.rp.starter.security.PasskeySecurityAutoConfiguration
+com.crosscert.passkey.rp.starter.web.PasskeyWebAutoConfiguration
+com.crosscert.passkey.rp.starter.obs.PasskeyObservabilityAutoConfiguration
