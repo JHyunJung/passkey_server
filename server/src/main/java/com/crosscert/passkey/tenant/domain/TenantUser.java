@@ -14,7 +14,6 @@ import lombok.NoArgsConstructor;
 @Entity
 @Table(
     name = "tenant_user",
-    schema = "passkey",
     uniqueConstraints =
         @UniqueConstraint(
             name = "uk_tenant_user__tenant_external",

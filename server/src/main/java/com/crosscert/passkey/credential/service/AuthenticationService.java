@@ -78,7 +78,10 @@ public class AuthenticationService {
    * discoverable-credential / usernameless flows. The challenge is stored in Redis under a ceremony
    * id which must be echoed back to {@link #finishAuthentication}.
    */
-  @Transactional
+  // No DB writes here — challenge lands in Redis (challengeStore) and the audit row is appended in
+  // a REQUIRES_NEW tx. readOnly disables Hibernate dirty-checking, so an accidental future write
+  // would surface as a clear error instead of silently committing.
+  @Transactional(readOnly = true)
   public AuthenticationOptionsResponse beginAuthentication(AuthenticationOptionsRequest req) {
     TenantWebauthnConfig cfg = configService.requireCurrent();
     byte[] challenge = randomBytes(ceremonyProps.challengeBytes());
@@ -152,6 +155,13 @@ public class AuthenticationService {
     long newCounter = authnData.getAuthenticatorData().getSignCount();
     updateCounterOrAudit(credential, newCounter);
 
+    // CTAP 2.1 BS flag — may flip between authentications as the user toggles
+    // iCloud Keychain / Google Password Manager backup. Reconcile and audit on change so
+    // compliance-sensitive RPs can react (e.g. downgrade trust on newly synced credentials).
+    boolean previousBackupState = credential.isBackupState();
+    boolean newBackupState = authnData.getAuthenticatorData().isFlagBS();
+    boolean backupStateChanged = credential.updateBackupState(newBackupState);
+
     TenantUser user =
         userRepo
             .findById(credential.getTenantUserId())
@@ -165,6 +175,51 @@ public class AuthenticationService {
         "CREDENTIAL",
         credential.getId().toString(),
         java.util.Map.of("credentialId", credential.getCredentialId(), "newCounter", newCounter));
+    if (backupStateChanged) {
+      // Direction matters operationally:
+      //  • false→true (SYNCED): credential now syncs to cloud. Compliance-sensitive RPs may want
+      //    to downgrade trust. WARN so it surfaces in security dashboards; the auth itself still
+      //    succeeds — the policy decision is left to the audit consumer.
+      //  • true→false (UNSYNCED): backup withdrawn / new device — informational.
+      boolean syncedDirection = newBackupState && !previousBackupState;
+      String eventName =
+          syncedDirection ? "auth.backup_state.synced" : "auth.backup_state.unsynced";
+      auditService.appendAfterCommit(
+          AuditEventType.CREDENTIAL_BACKUP_STATE_CHANGED,
+          ActorType.END_USER,
+          user.getId().toString(),
+          "CREDENTIAL",
+          credential.getId().toString(),
+          java.util.Map.of(
+              "credentialId",
+              credential.getCredentialId(),
+              "oldBs",
+              previousBackupState,
+              "newBs",
+              newBackupState,
+              "direction",
+              syncedDirection ? "SYNCED" : "UNSYNCED"));
+      if (syncedDirection) {
+        log.warn(
+            "{} tenantId={} tenantUserId={} credentialDbId={} from={} to={}",
+            eventName,
+            cfg.getTenantId(),
+            user.getId(),
+            credential.getId(),
+            previousBackupState,
+            newBackupState);
+        metrics.getBackupStateSyncedFlips().increment();
+      } else {
+        log.info(
+            "{} tenantId={} tenantUserId={} credentialDbId={} from={} to={}",
+            eventName,
+            cfg.getTenantId(),
+            user.getId(),
+            credential.getId(),
+            previousBackupState,
+            newBackupState);
+      }
+    }
     metrics.getAuthenticationSuccess().increment();
 
     log.info(
@@ -218,6 +273,10 @@ public class AuthenticationService {
             .consume(req.ceremonyId())
             .orElseThrow(() -> new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND));
     if (stored.ceremonyType() != CeremonyType.AUTHENTICATION) {
+      log.warn(
+          "auth.challenge.wrong_type ceremonyId={} actualType={}",
+          req.ceremonyId(),
+          stored.ceremonyType());
       throw new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND);
     }
     return stored;
@@ -265,7 +324,9 @@ public class AuthenticationService {
       origins.add(new Origin(o));
     }
     ServerProperty serverProperty = new ServerProperty(origins, cfg.getRpId(), challenge);
-    boolean userVerificationRequired = cfg.getUserVerification().name().equals("REQUIRED");
+    // Only REQUIRED is enforced server-side; PREFERRED/DISCOURAGED are best-effort hints to the
+    // authenticator. See UserVerificationPolicy javadoc.
+    boolean userVerificationRequired = cfg.getUserVerification().isStrictRequired();
     AuthenticationParameters params =
         new AuthenticationParameters(
             serverProperty, authenticator, null, userVerificationRequired, true);
@@ -290,14 +351,18 @@ public class AuthenticationService {
       credential.updateSignatureCounter(newCounter);
     } catch (BusinessException e) {
       if (e.getErrorCode() == ErrorCode.SIGNATURE_COUNTER_REGRESSION) {
+        // Sub-type of the regression — see Credential.RegressionReason. Falls back to UNKNOWN
+        // if a future refactor drops the detail string so the log line never goes blank.
+        String reason = e.getMessage() == null ? "UNKNOWN" : e.getMessage();
         log.error(
             "auth.signature_counter.regression tenantId={} tenantUserId={} credentialId={} "
-                + "storedCounter={} newCounter={}",
+                + "storedCounter={} newCounter={} reason={}",
             credential.getTenantId(),
             credential.getTenantUserId(),
             credential.getCredentialId(),
             credential.getSignatureCounter(),
-            newCounter);
+            newCounter,
+            reason);
         // FIDO clone-detection signal — auto-revoke the credential so the cloned key cannot keep
         // racing the legitimate device.
         credential.revoke(
@@ -314,6 +379,8 @@ public class AuthenticationService {
                 credential.getSignatureCounter(),
                 "newCounter",
                 newCounter,
+                "reason",
+                reason,
                 "autoRevoked",
                 true));
         metrics.getSignatureCounterRegression().increment();

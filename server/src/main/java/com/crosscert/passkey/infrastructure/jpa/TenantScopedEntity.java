@@ -18,7 +18,8 @@ import lombok.Getter;
 @MappedSuperclass
 public abstract class TenantScopedEntity extends BaseEntity {
 
-  @Column(name = "tenant_id", nullable = false, updatable = false, columnDefinition = "uuid")
+  // RAW(16) on Oracle; mapping is implicit via OracleDialect + java.util.UUID.
+  @Column(name = "tenant_id", nullable = false, updatable = false)
   private UUID tenantId;
 
   protected TenantScopedEntity() {}

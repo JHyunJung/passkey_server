@@ -34,7 +34,7 @@ public class AuditAggregationService {
         em.createNativeQuery(
                 """
                 SELECT event_type, count(*)
-                  FROM passkey.audit_log
+                  FROM audit_log
                  WHERE tenant_id = :tenantId
                    AND created_at >= :fromTs
                    AND created_at <  :toTs
@@ -58,7 +58,7 @@ public class AuditAggregationService {
   @Transactional(readOnly = true)
   public Optional<OffsetDateTime> lastEventAt(UUID tenantId) {
     Object raw =
-        em.createNativeQuery("SELECT MAX(created_at) FROM passkey.audit_log WHERE tenant_id = :tid")
+        em.createNativeQuery("SELECT MAX(created_at) FROM audit_log WHERE tenant_id = :tid")
             .setParameter("tid", tenantId)
             .getSingleResult();
     if (raw == null) {

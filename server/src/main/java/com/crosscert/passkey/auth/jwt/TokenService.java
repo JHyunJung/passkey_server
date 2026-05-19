@@ -5,6 +5,7 @@ import com.crosscert.passkey.auth.jwt.domain.RevokedReason;
 import com.crosscert.passkey.auth.jwt.repository.RefreshTokenRepository;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
+import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
@@ -18,7 +19,6 @@ import java.util.Date;
 import java.util.Optional;
 import java.util.UUID;
 import javax.crypto.SecretKey;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,7 +36,6 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class TokenService {
 
   private static final String TYP_ACCESS = "access";
@@ -44,6 +43,24 @@ public class TokenService {
 
   private final JwtProperties props;
   private final RefreshTokenRepository refreshRepo;
+  private final io.micrometer.core.instrument.Counter tidMismatchCounter;
+  private final io.micrometer.core.instrument.Counter reuseDetectedCounter;
+
+  public TokenService(
+      JwtProperties props,
+      RefreshTokenRepository refreshRepo,
+      io.micrometer.core.instrument.MeterRegistry registry) {
+    this.props = props;
+    this.refreshRepo = refreshRepo;
+    // Cross-tenant refresh attempts. Sustained increase ≈ token exfil or confused-deputy.
+    this.tidMismatchCounter =
+        io.micrometer.core.instrument.Counter.builder("passkey.security.refresh_tid_mismatch")
+            .register(registry);
+    // Refresh-token family burned because a revoked token was re-presented. ERROR-level signal.
+    this.reuseDetectedCounter =
+        io.micrometer.core.instrument.Counter.builder("passkey.security.refresh_reuse_detected")
+            .register(registry);
+  }
 
   private SecretKey key() {
     byte[] keyBytes = props.secret().getBytes(StandardCharsets.UTF_8);
@@ -99,6 +116,31 @@ public class TokenService {
     UUID tenantId = parseTid(claims);
     String externalUserId = claims.get("xuid", String.class);
 
+    // Cross-tenant refresh defence. The RP backend authenticates with X-API-Key (which pins
+    // ambient TenantContext), but the refresh token's tid claim is the JWT-signed source of
+    // truth for which tenant the original ceremony ran under. A mismatch means someone is
+    // presenting a refresh token issued for tenant A under tenant B's API key — possible token
+    // exfil or a confused-deputy bug. Refuse before touching the DB.
+    TenantContextHolder.optional()
+        .ifPresent(
+            ctx -> {
+              if (!ctx.tenantId().equals(tenantId)) {
+                // clientIp / userAgent are the only forensic pivots we have here — the request
+                // never reached the API key auth layer with the legitimate tenant binding. Sanitise
+                // both: rotate() forwards them straight from request headers.
+                log.warn(
+                    "token.refresh.tid_mismatch ambientTenantId={} claimTenantId={} jti={} "
+                        + "clientIp={} userAgent={}",
+                    ctx.tenantId(),
+                    tenantId,
+                    jti,
+                    com.crosscert.passkey.common.log.LogSanitiser.forLog(clientIp),
+                    com.crosscert.passkey.common.log.LogSanitiser.truncateUserAgent(userAgent));
+                tidMismatchCounter.increment();
+                throw new BusinessException(ErrorCode.INVALID_TOKEN, "tid mismatch");
+              }
+            });
+
     Optional<RefreshToken> opt = refreshRepo.findByIdAndTenantUserId(jti, userId);
     if (opt.isEmpty()) {
       log.warn("token.refresh.unknown_jti tenantId={} userId={} jti={}", tenantId, userId, jti);
@@ -114,12 +156,16 @@ public class TokenService {
               RevokedReason.REUSE_DETECTED,
               OffsetDateTime.now(ZoneOffset.UTC));
       log.error(
-          "token.refresh.reuse_detected tenantId={} userId={} jti={} rootJti={} burned={}",
+          "token.refresh.reuse_detected tenantId={} userId={} jti={} rootJti={} burned={} "
+              + "clientIp={} userAgent={}",
           tenantId,
           userId,
           jti,
           row.rootJti(),
-          burned);
+          burned,
+          com.crosscert.passkey.common.log.LogSanitiser.forLog(clientIp),
+          com.crosscert.passkey.common.log.LogSanitiser.truncateUserAgent(userAgent));
+      reuseDetectedCounter.increment();
       throw new BusinessException(ErrorCode.REFRESH_TOKEN_REUSED);
     }
     if (row.isExpired()) {
@@ -147,11 +193,21 @@ public class TokenService {
     RefreshToken row =
         refreshRepo
             .findByIdAndTenantUserId(jti, userId)
-            .orElseThrow(() -> new BusinessException(ErrorCode.REFRESH_TOKEN_REVOKED));
+            .orElseThrow(
+                () -> {
+                  log.warn("token.refresh.verify.unknown_jti userId={} jti={}", userId, jti);
+                  return new BusinessException(ErrorCode.REFRESH_TOKEN_REVOKED);
+                });
     if (row.isRevoked()) {
+      log.warn(
+          "token.refresh.verify.revoked userId={} jti={} reason={}",
+          userId,
+          jti,
+          row.getRevokedReason());
       throw new BusinessException(ErrorCode.REFRESH_TOKEN_REVOKED);
     }
     if (row.isExpired()) {
+      log.info("token.refresh.verify.expired userId={} jti={}", userId, jti);
       throw new BusinessException(ErrorCode.EXPIRED_TOKEN);
     }
     return claims;
@@ -215,17 +271,37 @@ public class TokenService {
       // point the user rotates onto the primary key automatically.
       SecretKey prev = previousKey();
       if (prev == null) {
+        log.warn(
+            "jwt.verify.failed typ={} cause={} reason={}",
+            expectedTyp,
+            primaryFailure.getClass().getSimpleName(),
+            primaryFailure.getMessage());
         throw new BusinessException(ErrorCode.INVALID_TOKEN, primaryFailure.getMessage());
       }
       try {
         claims = Jwts.parser().verifyWith(prev).build().parseSignedClaims(token).getPayload();
-        log.debug("jwt.verified.with.previous.secret typ={}", expectedTyp);
+        // Promoted to INFO: while rotation is in progress this gives ops a heartbeat that some
+        // traffic still rides the previous key, so they know when it's safe to drop it.
+        log.info("jwt.verify.previous_secret_used typ={}", expectedTyp);
       } catch (JwtException previousFailure) {
+        log.warn(
+            "jwt.verify.failed typ={} cause={} primary={} previous={}",
+            expectedTyp,
+            previousFailure.getClass().getSimpleName(),
+            primaryFailure.getMessage(),
+            previousFailure.getMessage());
         throw new BusinessException(ErrorCode.INVALID_TOKEN, previousFailure.getMessage());
       }
     }
     String actualTyp = claims.get("typ", String.class);
     if (!expectedTyp.equals(actualTyp)) {
+      // Token type confusion is a known attack class (refresh-as-access). Log it loudly so any
+      // attempt shows up in security dashboards.
+      log.warn(
+          "jwt.verify.wrong_typ expected={} actual={} jti={}",
+          expectedTyp,
+          actualTyp,
+          claims.getId());
       throw new BusinessException(
           ErrorCode.INVALID_TOKEN, "wrong token type: expected " + expectedTyp);
     }

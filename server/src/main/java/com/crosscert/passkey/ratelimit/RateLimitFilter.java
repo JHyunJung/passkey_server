@@ -115,6 +115,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
   @SuppressWarnings("ImmutableEnumChecker")
   public enum PathClass {
     REGISTER("register", RateLimitProperties::registrationPerMinute),
+    CREDENTIAL_AUTH_VERIFY(
+        "credential-auth-verify", RateLimitProperties::credentialAuthVerifyPerMinute),
     AUTHENTICATE("authenticate", RateLimitProperties::authenticationPerMinute),
     ADMIN_LOGIN("admin-login", RateLimitProperties::adminLoginPerMinute),
     DEFAULT("default", RateLimitProperties::defaultPerMinute);
@@ -130,6 +132,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
     static PathClass classify(String uri) {
       if (uri.startsWith("/api/v1/rp/passkeys/register")) {
         return REGISTER;
+      }
+      // The verify step is the costly half of an authentication ceremony (WebAuthn signature
+      // verification + signature counter persist) and the only path that admits a credentialId
+      // guess to enter the protocol — so it gets its own stricter bucket. Order matters: must
+      // match before the generic /authenticate prefix below.
+      if (uri.startsWith("/api/v1/rp/passkeys/authenticate/verify")) {
+        return CREDENTIAL_AUTH_VERIFY;
       }
       if (uri.startsWith("/api/v1/rp/passkeys/authenticate")) {
         return AUTHENTICATE;

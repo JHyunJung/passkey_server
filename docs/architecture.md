@@ -16,12 +16,12 @@ Crosscert Passkey Server의 내부 구조 문서. **누가** 어떤 데이터를
    카드사 IAM 담당      ──→  Passkey Admin Console SPA  ──→  Passkey Server
    (RP_ADMIN)                  (v1.1, REST는 완비)              │
                                                                 ▼
-   Crosscert 운영자     ──→  동일 콘솔, 권한만 다름      ──→  PostgreSQL + Redis
+   Crosscert 운영자     ──→  동일 콘솔, 권한만 다름      ──→  Oracle 19c + Redis
    (PLATFORM_OPERATOR)
 ```
 
 - **단일 Spring Boot 인스턴스**(stateless, 수평 확장 가능)
-- **PostgreSQL** — 모든 영속 데이터. Row-Level Security로 테넌트 격리.
+- **Oracle 19c** — 모든 영속 데이터. **Virtual Private Database(VPD)**로 테넌트 격리. (v1.5에서 PostgreSQL → Oracle 19c 이식. `docs/migration-postgres-to-oracle.md` 참조)
 - **Redis** — WebAuthn challenge 임시 저장(TTL 5분), rate-limit 카운터(Lua atomic INCR+EXPIRE), Spring Session, API key revocation pub/sub.
 - **외부 통신** — FIDO MDS3 BLOB (strict tenant 활성 시, 1일 1회 refresh). 그 외 없음.
 
@@ -163,25 +163,26 @@ com.crosscert.passkey
               (tenant_id NULL = PLATFORM_OPERATOR)
 ```
 
-### 3.2 RLS 정책 요약
+### 3.2 VPD 정책 요약 (구 RLS)
 
-| 테이블 | RLS | 정책 식 | 비고 |
-|--------|-----|---------|------|
+| 테이블 | VPD | 정책 식 (predicate) | 비고 |
+|--------|-----|---------------------|------|
 | `tenant` | ❌ | — | resolver/admin이 lookup 시작점 |
-| `tenant_user` | ✅ ENABLE+FORCE | `tenant_id = passkey.current_tenant_id()` | |
+| `tenant_user` | ✅ | `tenant_id = HEXTORAW(SYS_CONTEXT('PASSKEY_CTX','TENANT_ID'))` | |
 | `tenant_webauthn_config` | ✅ | 동일 | |
 | `tenant_attestation_policy` | ✅ | 동일 | |
 | `credential` | ✅ | 동일 | |
-| `audit_log` | ✅ (parent + 모든 partition) | 동일 | partition 추가 시 자동 상속 |
+| `audit_log` | ✅ | 동일 | EE 라이선스 시 INTERVAL Partitioning을 후속 마이그레이션으로 부착 |
+| `refresh_token` | ✅ | 동일 | |
 | `api_key` | ❌ | — | prefix lookup이 컨텍스트 set 전. Argon2 hash가 실제 게이트. |
 | `admin_user` | ❌ | — | 로그인 lookup이 컨텍스트 set 전. application authz가 게이트. |
 
-`passkey.current_tenant_id()`는 `current_setting('app.current_tenant')`를 읽어 `NULLIF`로 빈 문자열을 NULL로 변환 → **컨텍스트 미설정 시 모든 SELECT가 0 rows (fail-closed)**.
+정책 함수 `passkey_tenant_predicate(schema, object)`는 `SYS_CONTEXT('PASSKEY_CTX', 'TENANT_ID')`를 읽어 — 값이 없으면 `'1 = 0'`을 predicate로 반환해서 **컨텍스트 미설정 시 모든 SELECT가 0 rows (fail-closed)**. 컨텍스트는 secure application context (`CREATE CONTEXT PASSKEY_CTX USING passkey_ctx_pkg`)로, 트러스트된 setter 패키지만이 쓸 수 있습니다.
 
-DB 역할 3-tier:
-- `app_migrator` — Flyway 전용 owner
-- `app_runtime` — `NOBYPASSRLS NOSUPERUSER`. RP API + RP Admin 트래픽.
-- `app_admin` — `BYPASSRLS NOSUPERUSER`. Platform Operator의 cross-tenant 조회 (M4부터 활성).
+DB 사용자 3-tier (PG 역할 → Oracle user로 1:1 매핑):
+- `APP_MIGRATOR` — Flyway 전용 owner, 모든 객체 소유
+- `APP_RUNTIME` — RP API + RP Admin 트래픽. `EXEMPT ACCESS POLICY` 미부여 — VPD 적용.
+- `APP_ADMIN` — Platform Operator의 cross-tenant 조회. `EXEMPT ACCESS POLICY` 부여 — VPD 우회 (PG의 `BYPASSRLS`와 동일).
 
 ### 3.3 엔티티 상세
 
@@ -650,28 +651,46 @@ ArchUnit 1.3.0                           패키지 경계 검증
 로그 패턴: `[%X{traceId:-},%X{tenantId:-},%X{adminId:-},%X{apiKeyId:-}]`
 
 **로그 컨벤션** (dot-notation prefix, JSON에서도 grep 친화적):
-- `register.begin`, `register.success`, `register.attestation.invalid`, `register.aaguid.rejected`
-- `auth.begin`, `auth.success`, `auth.assertion.invalid`, `auth.signature_counter.regression`
-- `apikey.verify.{success,malformed,unknown_prefix,revoked,secret_mismatch}`, `apikey.issued`, `apikey.revocation.{published,received,malformed}`
+- `http` (AccessLogFilter — per-request 한 줄: method, path, status, durationMs + MDC 컨텍스트)
+- `register.begin`, `register.success`, `register.attestation.invalid`, `register.aaguid.rejected`, `register.syncable.rejected`, `register.challenge.wrong_type`
+- `auth.begin`, `auth.success`, `auth.assertion.invalid`, `auth.signature_counter.regression` (reason=`DOWNGRADE_TO_ZERO|REPLAY|BACKWARDS`), `auth.backup_state.synced` (WARN), `auth.backup_state.unsynced` (INFO), `auth.challenge.wrong_type`, `auth.credential.ratelimit.exceeded`
+- `apikey.auth.{accept,reject}` (reason=`missing_header|verify_failed|tenant_inactive`), `apikey.issued`, `apikey.revocation.{published,received,malformed}`
 - `admin.login.{success,failure}`, `admin.unauthenticated`, `admin.access_denied`, `admin.tenant.created`, `admin.apikey.revoke`, `authz.denied`
 - `rp.unauthorized`, `ratelimit.exceeded`
-- `challenge.{save,consume.miss}`, `audit.append`, `audit.append.async.failed`, `credential.{rename,revoke}`
+- `challenge.{save,consume.miss}`, `audit.append`, `audit.append.async.failed`
+- `credential.{rename,revoke}` (admin path), `credential.rename.rp`, `credential.revoke.rp` (RP-facing, ownership 통과), `credential.ownership.mismatch` (WARN — IDOR 시도 시그널)
+- `token.refresh.{unknown_jti,verify.unknown_jti,verify.revoked,verify.expired,reuse_detected,tid_mismatch}` (보안 이벤트), `jwt.verify.{failed,previous_secret_used,wrong_typ}`
 - `audit.chain.verify.{start,done,error}`, `audit.chain.tampered` (ERROR — 위변조 의심)
-- `rls.context.{set,unset}` (TRACE / DEBUG)
+- `vpd.context.{set,unset,clear.failed}` (DEBUG / TRACE) — Oracle VPD application context lifecycle
 - `mds.{provider.constructed,refresh.success,scheduled.refresh.failed,warmup.failed}`, `register.{mds.strict.engaged,mds.unavailable,mds.trust_failed,authenticator.revoked}`
+- `passkey.boot.{ready,cookie.note,mds.misconfig,ratelimit.disabled}` (BootSanityLogger — ApplicationReadyEvent 시 단일 환경 덤프)
 
 **레벨 정책**:
-- `ERROR` — 무결성 위협 의심 (`auth.signature_counter.regression` → FIDO2 clone 가능성)
-- `WARN` — 보안 이벤트 (로그인 실패, authz denied, ratelimit 초과, attestation invalid)
-- `INFO` — 정상 흐름 핵심 (register/auth begin & success, admin 작업, apikey 발급)
-- `DEBUG` — 진단 (challenge save, audit.append, apikey.verify.success, RLS context)
-- `TRACE` — RLS tenant set per-tx (대량, prod에서 항상 OFF)
+- `ERROR` — 무결성 위협 의심 (`auth.signature_counter.regression` clone 가능성, `token.refresh.reuse_detected` token reuse)
+- `WARN` — 보안 이벤트 (로그인 실패, authz denied, ratelimit 초과, attestation invalid, `apikey.auth.reject reason=verify_failed`, `credential.ownership.mismatch`, `auth.backup_state.synced` compliance 시그널, `token.refresh.tid_mismatch`)
+- `INFO` — 정상 흐름 핵심 (register/auth begin & success, admin 작업, apikey 발급, `credential.revoke.rp`, `http` 2xx/3xx/4xx, `auth.backup_state.unsynced`)
+- `DEBUG` — 진단 (challenge save, audit.append, `apikey.auth.reject reason=missing_header`, VPD context lifecycle)
+- `TRACE` — VPD tenant set per-tx (대량, prod에서 항상 OFF)
+
+**메트릭** (`/actuator/prometheus`):
+- `passkey.registration{outcome}`, `passkey.authentication{outcome}` — ceremony 결과 counter
+- `passkey.signature_counter_regression` — 자동 revoke 시그널 (reason별 분리는 로그/audit에서)
+- `passkey.backup_state.flips{direction=synced}` — CTAP 2.1 BS false→true. compliance dashboard용. UNSYNCED는 카운팅 안 함
+- `passkey.security.ownership_mismatch` — RP-facing IDOR 시도 (rename/revoke가 다른 사용자 키 대상)
+- `passkey.security.refresh_tid_mismatch` — cross-tenant refresh 시도 (token exfil 또는 confused-deputy)
+- `passkey.security.refresh_reuse_detected` — 이미 rotate된 refresh 재제출 → family burn
+- `audit.chain.tampered` — hash chain 위변조 의심
+- 권장 알람 (참고): tid_mismatch ≥1 즉시 page, ownership_mismatch 5분 10건↑ warn, refresh_reuse_detected 5분 3건↑ warn
 
 **profile별 appender** (`logback-spring.xml`):
 - `!prod` (local/test/dev): Console만, `com.crosscert.passkey` DEBUG
-- `prod`: Async wrapper로 (1) JSON stdout (k8s/LB 수집용) + (2) RollingFile `logs/passkey-server.log` (100MB×14일, totalSizeCap 5GB, gzip), root INFO, Hibernate SQL WARN
+- `prod`: 3-track 분리
+  - `CONSOLE_JSON_WARN_SYNC` — WARN+ 동기 stdout (queue overflow 시에도 보안 이벤트 무유실)
+  - `ASYNC_CONSOLE_JSON` — INFO/DEBUG 비동기 stdout (WARN+ DENY 필터로 중복 제거)
+  - `ASYNC_FILE` — RollingFile `logs/passkey-server.log` (100MB×14일, totalSizeCap 5GB, gzip) — forensic 백스톱
+  - root INFO, Hibernate SQL WARN, dedicated logger `access` INFO
 
-**PII 마스킹**: 모든 로그 안전 처리는 `common.log.LogSanitiser`로 일원화 — `forLog(s)`는 CR/LF 치환 + 1024자 truncate (log injection + 로그 폭주 방어), `maskEmail(s)`는 `a***@domain.com` 형태로 local-part 마스킹. 도메인 코드는 LogSanitiser를 static import로만 호출.
+**PII 마스킹**: 모든 로그 안전 처리는 `common.log.LogSanitiser`로 일원화 — `forLog(s)`는 CR/LF 치환 + 1024자 truncate (log injection + 로그 폭주 방어), `maskEmail(s)`는 `a***@domain.com` 형태로 local-part 마스킹, `truncateUserAgent(s)`는 128자, `shortId(s)`는 last-8. 도메인 코드는 LogSanitiser를 static import로만 호출.
 
 ---
 
@@ -771,3 +790,6 @@ strict on이지만 서버 `passkey.mds.enabled=false`면 해당 tenant의 regist
 | 2026-05-15 | FIDO MDS3 통합 | `credential.metadata` 패키지 신설 (`MdsBlobProvider` + `MdsRefreshScheduler` + `MdsTrustAnchorRepositoryConfig`), `webauthn4j-metadata:0.27` 의존성, V10 `tenant_attestation_policy.mds_strict` 컬럼, strict `WebAuthnManager` 빈 + `RegistrationService` 분기, ErrorCode 3종(P010 `MDS_TRUST_FAILED`, P011 `MDS_UNAVAILABLE`, P012 `AUTHENTICATOR_REVOKED`) + audit event `ATTESTATION_TRUST_FAILED`, `/_diag/mds-status` |
 | 2026-05-16 | Quality/Performance/Security Hardening | **SEC-1**: `AuditService.verifyIntegrity(tenantId, from, to)` + `AuditEntryRepository.streamForTenantByTime` + `GET /api/v1/admin/tenants/{id}/audit-logs/verify` + 일별 `AuditChainScheduler` (03:30 UTC) + `audit.chain.tampered` Micrometer counter. **SEC-2**: Tomcat `RemoteIpValve` 활성화 (`server.forward-headers-strategy=framework` + `tomcat.remoteip.*`) → admin-login rate limit이 실제 client IP 기반. **SEC-3**: `application.yml`에서 JWT secret default 제거 (prod fail-fast). **SEC-4/5**: CSRF + Spring Session cookie `Secure`/`SameSite=Lax`/`Path=/api/v1/admin` 명시. **SEC-6**: `application-prod.yml`에서 springdoc/swagger-ui disabled. **SEC-7**: HSTS + CSP (`default-src 'none'`) + frame-ancestors + Referrer-Policy를 모든 chain에 적용. **PF-1**: `RateLimiter`를 Lua `INCR+EXPIRE` atomic 단일 round-trip으로 전환. **PF-2**: `AuditService.appendAfterCommit` + `@Async("auditExecutor")` + DLQ 로깅 — ceremony 성공 audit가 hot path에서 비동기. 실패 audit는 동기 유지(컴플라이언스). **PF-3**: `ApiKeyService.verifiedCache`를 `LoadingCache`로 전환 — single-flight로 cache stampede 방지. **PF-4**: Hikari pool size 환경변수화 (`PASSKEY_HIKARI_POOL_MAX`). **PF-5**: `RateLimitFilter.PathClass` enum으로 URI 1회 분류. **CQ-1**: `AdminSecurityConfig.writeError`를 ObjectMapper + `ApiResponse.error` 사용으로 전환. **CQ-3**: TS SDK `unwrap()`에 content-type/JSON 파싱 가드 + `transports.split` null/빈 처리. **CQ-4**: ErrorProne + JaCoCo plugin 도입 (warn-only). **CQ-5**: `ApiKeyProperties`, `WebauthnCeremonyProperties`, `RateLimitProperties.adminLoginPerMinute` 신설로 Argon2 파라미터/challenge length/admin-login limit 외부화. **CQ-6**: `common.log.LogSanitiser` 통합 (forLog + maskEmail). **CQ-7**: Service 핵심 public method Javadoc. unit test 4개 추가 (`AuditServiceVerifyIntegrityTest`, `RateLimiterTest`, `RateLimitFilterTest`, `ApiKeyServiceTest`, `LogSanitiserTest`). Spring Security 6 deprecation: `AntPathRequestMatcher` → `PathPatternRequestMatcher`. |
 | 2026-05-16 | Admin Console v0.1 (`admin/` 신규) | Vite 5 + React 18 + TS + Tailwind + shadcn/ui + TanStack Query 5 + React Router 6 SPA. 별도 도메인 `admin.passkey.example.com` 전제. 기능: PLATFORM_OPERATOR / RP_ADMIN 2 role 자동 라우팅, Tenants list+create, WebAuthn config / AAGUID 정책 (chip 입력 + mdsStrict 토글), API Keys (발급 → plaintext **1회만** 노출 모달 + 체크박스 강제), Credentials (페이지된 목록 + 클라이언트 검색 + revoke), Audit Log (eventType 필터 + payload modal) + **Hash chain Verify 패널** (날짜 범위 → intact 배지 + tampered row highlight), Funnel (windowDays 카드). 서버 호환 변경: `AdminSecurityConfig.cors(...)` + `CorsConfigurationSource` bean (`passkey.admin.console-origin` allowlist), `CookieCsrfTokenRepository` SameSite property화 (`passkey.cookie.same-site`), `server.servlet.session.cookie.same-site` prod=`none`/local=`lax`. `unit/admin/AdminCorsConfigTest` 추가. SPA 빌드 산출물 gzipped ≈185 KB (lazy chunk 9종), nginx 정적 호스팅 (`Dockerfile` multi-stage + `nginx.conf` 보안 헤더). 단위 테스트 8건 (api unwrap + format util), e2e Playwright spec 5종 (M5에서 docker-compose backend wire-up 후 활성화 예정). 설계 문서: `admin-console-docs/admin-console-prd.md` + `admin-console-docs/admin-console-action-plan.md`. 운영 의존: `PASSKEY_ADMIN_CONSOLE_ORIGIN`, `PASSKEY_COOKIE_SAME_SITE`, `PASSKEY_SESSION_SAME_SITE` env 설정 + 운영팀 도메인 정책 (별도 호스트 vs 같은 etld+1) 합의 필요. |
+| 2026-05-18 | Oracle 이식 (v1.5) | PG RLS → Oracle 19c VPD 전면 이식. `V1__oracle_baseline.sql` + `R__vpd_policies.sql` 단일 baseline, PG migration history는 `db/archive_postgres/` 보존. `passkey_ctx_pkg` secure application context + `MultiTenantConnectionProvider`가 `set_tenant`/`clear_tenant` 호출 (HikariCP 반납 시 누수 방지). DB user 3-tier — `APP_MIGRATOR`(Flyway)/`APP_RUNTIME`(VPD 적용)/`APP_ADMIN`(`EXEMPT ACCESS POLICY`). Audit chain advisory lock은 `DBMS_LOCK.ALLOCATE_UNIQUE + DBMS_LOCK.REQUEST(X_MODE, release_on_commit=TRUE)` 로 PG `pg_advisory_xact_lock` 대체. Audit 테이블은 EE에서 Interval Partitioning 후속 적용 가능. `RlsPolicyCatalogTest`가 VPD 정책 catalog 검증. |
+| 2026-05-18 | Spec / Security P0~P1 (RP IDOR + CTAP 2.1) | **PR1**: `RegistrationOptionsResponse.excludeCredentials` (NON_EMPTY 직렬화 — 신규 user 영향 0). **PR2**: CTAP 2.1 BS flag 추적 — `Credential.updateBackupState`, `AuditEventType.CREDENTIAL_BACKUP_STATE_CHANGED`, direction 분리 (`auth.backup_state.synced` WARN / `.unsynced` INFO). **PR3 (BREAKING)**: RP-facing `/api/v1/rp/passkeys/{id}` rename(body `externalUserId`) / revoke(query `externalUserId`)에 ownership 검증 — `CredentialLifecycleService.renameForUser/revokeForUser`, `RpCredentialRenameRequest` 신설, admin path는 기존 `rename(UUID, String)` / `revoke(UUID, reason)` 보존. mismatch는 enumeration 방어를 위해 `P006`로 응답. **PR4**: signature counter regression 세분화 (`Credential.RegressionReason.DOWNGRADE_TO_ZERO/REPLAY/BACKWARDS`) — `auth.signature_counter.regression` 로그/audit payload에 `reason` 필드. **PR5**: `UserVerificationPolicy.isStrictRequired()` 신설 — REQUIRED만 strict, PREFERRED/DISCOURAGED는 best-effort 의도 명시. **PR6**: `TokenService.rotate`에 ambient TenantContext vs JWT `tid` claim 일치 검증, 위반 시 `token.refresh.tid_mismatch` WARN + clientIp/userAgent + `INVALID_TOKEN`. ArchUnit Rule 2 allow-list에 `..auth.jwt..` 추가. **PR7**: `user.id` (WebAuthn) 인코딩을 UUID 텍스트(36 byte) → raw 16 byte로 전환 — 신규 등록만 적용, 기존 row 동거. **PR8**: SDK `@crosscert/passkey-sdk` v0.2.0 — `excludeCredentials` 전달, `renameCredential(id, externalUserId, nickname)` / `revokeCredential(id, externalUserId)` 신설. 부수: 이전 세션의 `BootSanityLogger`가 `common.log`에서 5개 도메인 import해 ArchUnit Rule 1 위반 → `infrastructure.bootlog`로 이동. 단위 테스트 신설/확장: `CredentialBackupStateTest`(3), `CredentialLifecycleServiceOwnershipTest`(5), `TokenServiceRotateTenantMismatchTest`(2), `UserVerificationPolicyTest`(3), `regression_detail_carries_*`(3), `RegistrationServiceTest.userHandle/excludeCredentials`(3). |
+| 2026-05-18 | Observability Wave 2 | 신규 메트릭: `passkey.backup_state.flips{direction=synced}` (compliance dashboard), `passkey.security.ownership_mismatch` (IDOR 알람), `passkey.security.refresh_tid_mismatch` (cross-tenant exfil), `passkey.security.refresh_reuse_detected` (token reuse). 신규 운영 이벤트: `auth.backup_state.synced` (WARN) / `.unsynced` (INFO), `credential.ownership.mismatch` (WARN), `credential.revoke.rp` (INFO — admin path와 구분), `token.refresh.tid_mismatch` (WARN, clientIp/UA 포함), `token.refresh.reuse_detected` (ERROR, clientIp/UA 포함). 신규 인프라: `AccessLogFilter` (per-request INFO/WARN/ERROR — method, path, status, durationMs, MDC 컨텍스트), `BootSanityLogger` (`ApplicationReadyEvent` 시 profile/MDS/Argon2/rate-limit/cookie/JWT 단일 INFO 라인 + 위험 조합 WARN), `ApiKeyAuthenticationFilter` 인증 실패 경로별 WARN(`apikey.auth.reject reason=verify_failed|tenant_inactive`)으로 분리, `TokenService.parseSigned` 실패/타입혼동 WARN, `ChallengeStore.consume.miss` DEBUG→INFO 승격, register/auth `challenge.wrong_type` WARN. `logback-spring.xml` prod profile — WARN+ sync `CONSOLE_JSON_WARN_SYNC`로 분리해 async queue overflow 시에도 보안 이벤트 무유실. |

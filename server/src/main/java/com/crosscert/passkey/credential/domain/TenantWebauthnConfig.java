@@ -15,7 +15,7 @@ import lombok.NoArgsConstructor;
 
 @Getter
 @Entity
-@Table(name = "tenant_webauthn_config", schema = "passkey")
+@Table(name = "tenant_webauthn_config")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class TenantWebauthnConfig extends TenantScopedEntity {
 

@@ -17,21 +17,24 @@ import lombok.NoArgsConstructor;
 
 @Getter
 @Entity
-@Table(name = "credential", schema = "passkey")
+@Table(name = "credential")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Credential extends TenantScopedEntity {
 
-  @Column(name = "tenant_user_id", nullable = false, updatable = false, columnDefinition = "uuid")
+  @Column(name = "tenant_user_id", nullable = false, updatable = false)
   private UUID tenantUserId;
 
   /** base64url-encoded raw credential id. */
   @Column(name = "credential_id", nullable = false, updatable = false)
   private String credentialId;
 
+  // COSE public-key blob can exceed the implicit RAW(255) Hibernate would otherwise expect on
+  // Oracle. Pin to a LOB so the DDL/Validator agree on BLOB semantics.
+  @jakarta.persistence.Lob
   @Column(name = "public_key_cose", nullable = false, updatable = false)
   private byte[] publicKeyCose;
 
-  @Column(name = "aaguid", columnDefinition = "uuid")
+  @Column(name = "aaguid")
   private UUID aaguid;
 
   /** CSV of transports. */
@@ -45,9 +48,13 @@ public class Credential extends TenantScopedEntity {
   @Column(name = "signature_counter", nullable = false)
   private long signatureCounter;
 
+  // Oracle 19c lacks a SQL BOOLEAN type. Pin the JDBC type so Hibernate's schema validator does
+  // not insist on Types#BOOLEAN against our NUMBER(1) DDL.
+  @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.TINYINT)
   @Column(name = "backup_eligible", nullable = false)
   private boolean backupEligible;
 
+  @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.TINYINT)
   @Column(name = "backup_state", nullable = false)
   private boolean backupState;
 
@@ -147,24 +154,82 @@ public class Credential extends TenantScopedEntity {
 
   /**
    * Updates the signature counter after a successful assertion. Throws {@code
-   * SIGNATURE_COUNTER_REGRESSION} when {@code newCounter} is less than or equal to the stored
-   * counter — this is the canonical clone-detection check from FIDO2.
+   * SIGNATURE_COUNTER_REGRESSION} on any of the FIDO2 clone-detection conditions:
    *
-   * <p>Spec note: a {@code newCounter} of 0 means the authenticator does not implement signature
-   * counters. In that case the stored counter is also 0 — we treat counter == 0 → no regression
-   * possible.
+   * <ul>
+   *   <li>{@code newCounter == stored} (counter did not advance — possible replay)
+   *   <li>{@code newCounter < stored} (counter went backwards — classic clone signal)
+   *   <li>{@code newCounter == 0 && stored > 0} (counter downgraded to zero — clone with reset
+   *       firmware, or a malicious authenticator pretending not to support counters; treated as a
+   *       clone signal even though some legitimate firmware-reset cases will trip it — see WebAuthn
+   *       L3 §6.1.1)
+   * </ul>
+   *
+   * <p>The benign no-op case is {@code newCounter == 0 && stored == 0}: the authenticator never
+   * advertised a counter at registration and continues not to. Anything else is a regression.
    */
   public void updateSignatureCounter(long newCounter) {
-    if (newCounter == 0 && this.signatureCounter == 0) {
-      // Authenticator does not use a counter. Nothing to verify.
-    } else if (newCounter <= this.signatureCounter) {
-      throw new BusinessException(ErrorCode.SIGNATURE_COUNTER_REGRESSION);
+    boolean bothZero = newCounter == 0 && this.signatureCounter == 0;
+    if (bothZero) {
+      // Authenticator does not use a counter. Nothing to advance, nothing to verify.
+      this.lastUsedAt = OffsetDateTime.now(ZoneOffset.UTC);
+      return;
+    }
+    // Distinguish the three regression sub-types so the caller can grade severity:
+    //  • DOWNGRADE_TO_ZERO — strongest clone signal (or malicious authenticator)
+    //  • REPLAY           — counter unchanged; possible relay / replay attack
+    //  • BACKWARDS        — classic clone (legitimate keys never decrement)
+    // All three share the same ErrorCode and trigger the same downstream auto-revoke; the reason
+    // is carried in the exception detail so logs and audit payloads can record it.
+    if (newCounter == 0 && this.signatureCounter > 0) {
+      throw new BusinessException(
+          ErrorCode.SIGNATURE_COUNTER_REGRESSION, RegressionReason.DOWNGRADE_TO_ZERO.name());
+    }
+    if (newCounter == this.signatureCounter) {
+      throw new BusinessException(
+          ErrorCode.SIGNATURE_COUNTER_REGRESSION, RegressionReason.REPLAY.name());
+    }
+    if (newCounter < this.signatureCounter) {
+      throw new BusinessException(
+          ErrorCode.SIGNATURE_COUNTER_REGRESSION, RegressionReason.BACKWARDS.name());
     }
     this.signatureCounter = newCounter;
     this.lastUsedAt = OffsetDateTime.now(ZoneOffset.UTC);
   }
 
+  /**
+   * Sub-classification of a {@code SIGNATURE_COUNTER_REGRESSION}. Carried as the exception detail
+   * string so callers (and downstream log/audit consumers) can grade severity without re-deriving
+   * the comparison from raw counters.
+   */
+  public enum RegressionReason {
+    /** stored &gt; 0 but new == 0. Strongest clone signal — also covers malicious downgrade. */
+    DOWNGRADE_TO_ZERO,
+    /** stored == new. Counter did not advance — possible replay / relay attack. */
+    REPLAY,
+    /** new &lt; stored (and new &gt; 0). Classic clone — counters never legitimately decrement. */
+    BACKWARDS
+  }
+
   public void recordUse() {
     this.lastUsedAt = OffsetDateTime.now(ZoneOffset.UTC);
+  }
+
+  /**
+   * Reconciles the stored {@code backupState} (CTAP 2.1 BS flag) with the value observed in this
+   * authentication's authenticator data. Returns {@code true} if the flag changed — the caller uses
+   * that signal to emit a {@code CREDENTIAL_BACKUP_STATE_CHANGED} audit row and log line.
+   *
+   * <p>Spec note: BE (Backup Eligibility) is fixed at credential creation and never updated here;
+   * BS can flip every authentication as the user enables / disables iCloud Keychain or Google
+   * Password Manager backup. Compliance-sensitive RPs (e.g. finance) rely on this signal to
+   * downgrade or revoke trust on newly synced credentials.
+   */
+  public boolean updateBackupState(boolean newBackupState) {
+    if (this.backupState == newBackupState) {
+      return false;
+    }
+    this.backupState = newBackupState;
+    return true;
   }
 }

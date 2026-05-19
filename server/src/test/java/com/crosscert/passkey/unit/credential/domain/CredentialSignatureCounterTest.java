@@ -59,4 +59,41 @@ class CredentialSignatureCounterTest {
         .extracting("errorCode")
         .isEqualTo(ErrorCode.SIGNATURE_COUNTER_REGRESSION);
   }
+
+  @Test
+  void counter_downgrade_to_zero_rejected_when_stored_is_positive() {
+    // FIDO2 clone signal: an authenticator that previously advertised a counter (stored > 0)
+    // suddenly reports 0. Treated as regression. Some legitimate firmware-reset cases will trip
+    // this; the trade-off is intentional — false positives are operationally cheap to recover
+    // (re-enrol the passkey), false negatives let a cloned key keep authenticating.
+    Credential c = newCredential(50);
+    assertThatThrownBy(() -> c.updateSignatureCounter(0))
+        .isInstanceOf(BusinessException.class)
+        .extracting("errorCode")
+        .isEqualTo(ErrorCode.SIGNATURE_COUNTER_REGRESSION);
+  }
+
+  @Test
+  void regression_detail_carries_DOWNGRADE_TO_ZERO_reason() {
+    Credential c = newCredential(50);
+    assertThatThrownBy(() -> c.updateSignatureCounter(0))
+        .isInstanceOf(BusinessException.class)
+        .hasMessage(Credential.RegressionReason.DOWNGRADE_TO_ZERO.name());
+  }
+
+  @Test
+  void regression_detail_carries_REPLAY_reason() {
+    Credential c = newCredential(10);
+    assertThatThrownBy(() -> c.updateSignatureCounter(10))
+        .isInstanceOf(BusinessException.class)
+        .hasMessage(Credential.RegressionReason.REPLAY.name());
+  }
+
+  @Test
+  void regression_detail_carries_BACKWARDS_reason() {
+    Credential c = newCredential(10);
+    assertThatThrownBy(() -> c.updateSignatureCounter(9))
+        .isInstanceOf(BusinessException.class)
+        .hasMessage(Credential.RegressionReason.BACKWARDS.name());
+  }
 }

@@ -15,6 +15,13 @@ public record RegistrationOptionsResponse(
     String attestation,
     AuthenticatorSelection authenticatorSelection,
     /**
+     * Active credentials already registered to this user. Authenticator-side hint to refuse a
+     * second enrolment from the same device — closes the duplicate-register UX gap described in
+     * WebAuthn L3 §5.1.3. Omitted entirely when the user has no active credentials so newly
+     * onboarded users see a clean payload.
+     */
+    @JsonInclude(JsonInclude.Include.NON_EMPTY) List<ExcludeCredential> excludeCredentials,
+    /**
      * WebAuthn extension inputs (omitted when no tenant policy requires any). Today only the CTAP2
      * {@code credentialProtectionPolicy} entry is populated.
      */
@@ -28,4 +35,6 @@ public record RegistrationOptionsResponse(
 
   public record AuthenticatorSelection(
       String userVerification, String residentKey, boolean requireResidentKey) {}
+
+  public record ExcludeCredential(String type, String id, String transports) {}
 }

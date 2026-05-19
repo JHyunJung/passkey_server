@@ -1,16 +1,19 @@
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/passkey
-    username: app_runtime
+    # Oracle 19c via Free Edition / XE on docker-compose. FREEPDB1 is the default PDB service name
+    # for gvenzl/oracle-free; switch to XEPDB1 if running gvenzl/oracle-xe.
+    url: jdbc:oracle:thin:@//localhost:1521/FREEPDB1
+    username: APP_RUNTIME
     password: change_me_local
     hikari:
       maximum-pool-size: 10
       auto-commit: false
+      connection-test-query: SELECT 1 FROM DUAL
 
   flyway:
-    url: jdbc:postgresql://localhost:5432/passkey
-    user: app_migrator
-    password: change_me_local
+    url: jdbc:oracle:thin:@//localhost:1521/FREEPDB1
+    user: APP_MIGRATOR
+    password: change_me_migrator
     placeholders:
       app_runtime_password: change_me_local
       app_admin_password: change_me_admin
@@ -26,12 +29,13 @@ passkey:
     # vite dev server. Browsers send Origin=http://localhost:5173, which must match exactly.
     console-origin: http://localhost:5173
     datasource:
-      url: jdbc:postgresql://localhost:5432/passkey
-      username: app_admin
+      url: jdbc:oracle:thin:@//localhost:1521/FREEPDB1
+      username: APP_ADMIN
       password: change_me_admin
       hikari:
         maximum-pool-size: 5
         auto-commit: false
+        connection-test-query: SELECT 1 FROM DUAL
   # Local dev runs over HTTP — cookies cannot be Secure. Production keeps the default true.
   cookie:
     secure: false

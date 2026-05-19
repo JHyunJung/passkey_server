@@ -1,5 +1,7 @@
 spring:
   datasource:
+    # Oracle 19c JDBC. URL format: jdbc:oracle:thin:@//host:1521/SERVICE_NAME (Cloud DB / RDS)
+    # or jdbc:oracle:thin:@host:1521:SID for the legacy SID form. Username should be APP_RUNTIME.
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}
@@ -10,6 +12,9 @@ spring:
       # share this pool, so do not undersize.
       maximum-pool-size: ${PASSKEY_HIKARI_POOL_MAX:40}
       auto-commit: false
+      # Defensive: ojdbc11's isValid() generally suffices, but DUAL keeps behavior identical to
+      # the legacy Postgres setup so connection failure modes are easy to compare.
+      connection-test-query: SELECT 1 FROM DUAL
   flyway:
     url: ${SPRING_FLYWAY_URL}
     user: ${SPRING_FLYWAY_USER}
@@ -57,11 +62,12 @@ passkey:
     console-origin: ${PASSKEY_ADMIN_CONSOLE_ORIGIN:https://admin.passkey.example.com}
     datasource:
       url: ${SPRING_DATASOURCE_URL}
-      username: app_admin
+      username: APP_ADMIN
       password: ${SPRING_FLYWAY_PLACEHOLDERS_APP_ADMIN_PASSWORD}
       hikari:
         maximum-pool-size: ${PASSKEY_HIKARI_ADMIN_POOL_MAX:5}
         auto-commit: false
+        connection-test-query: SELECT 1 FROM DUAL
   cookie:
     # Cross-site CSRF cookie transmission required for the separate admin console domain.
     same-site: ${PASSKEY_COOKIE_SAME_SITE:None}
@@ -77,6 +83,7 @@ passkey:
     authentication-per-minute: ${PASSKEY_RL_AUTHENTICATION:60}
     default-per-minute: ${PASSKEY_RL_DEFAULT:120}
     admin-login-per-minute: ${PASSKEY_RL_ADMIN_LOGIN:5}
+    credential-auth-verify-per-minute: ${PASSKEY_RL_CREDENTIAL_AUTH_VERIFY:10}
   actuator:
     username: ${PASSKEY_ACTUATOR_USER:actuator}
     password: ${PASSKEY_ACTUATOR_PASSWORD}

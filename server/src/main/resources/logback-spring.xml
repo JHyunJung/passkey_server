@@ -25,11 +25,43 @@
     </springProfile>
 
     <!-- =========================================================
-         prod: JSON to stdout (LB/k8s log collection) + rolling file backup, both wrapped in Async
+         prod: stdout (sync for WARN+, async for INFO/DEBUG) + rolling file backup (async).
+
+         Design note: the previous setup wrapped BOTH appenders in AsyncAppender with
+         neverBlock=true, so under burst load the queue could silently drop messages — including
+         WARN/ERROR security events (apikey verify_failed, jwt verify failures, signature counter
+         regressions). The split below keeps high-volume INFO traffic async but routes any record
+         at WARN or above through a sync ConsoleAppender so it cannot be discarded: stdout is the
+         primary collection channel for k8s/LB, and a missed security event there is a real
+         operational risk.
          ========================================================= -->
     <springProfile name="prod">
-        <!-- LogstashEncoder-style JSON without the extra dependency: use pattern with mdc/key fields. -->
+        <!-- LogstashEncoder-style JSON without the extra dependency: use pattern with mdc/key fields.
+             Caps level at INFO via LevelFilter chain so WARN+ does not double-emit on the sync
+             console (CONSOLE_JSON_WARN_SYNC below handles those). -->
         <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <filter class="ch.qos.logback.classic.filter.LevelFilter">
+                <level>WARN</level>
+                <onMatch>DENY</onMatch>
+                <onMismatch>NEUTRAL</onMismatch>
+            </filter>
+            <filter class="ch.qos.logback.classic.filter.LevelFilter">
+                <level>ERROR</level>
+                <onMatch>DENY</onMatch>
+                <onMismatch>ACCEPT</onMismatch>
+            </filter>
+            <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+                <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%logger{40}","thread":"%thread","traceId":"%X{traceId:-}","tenantId":"%X{tenantId:-}","adminId":"%X{adminId:-}","apiKeyId":"%X{apiKeyId:-}","msg":"%replace(%msg){'\"','\\\"'}"%n%nopex,"ex":"%replace(%xException){'[\\r\\n]+','\\\\n'}"}%n</pattern>
+            </encoder>
+        </appender>
+
+        <!-- Sync console for WARN+. Throughput-bounded but never drops. WARN/ERROR volume in this
+             system is dominated by security signals and 5xx — the cost of a brief sync write on
+             those events is acceptable; the cost of silently losing one is not. -->
+        <appender name="CONSOLE_JSON_WARN_SYNC" class="ch.qos.logback.core.ConsoleAppender">
+            <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+                <level>WARN</level>
+            </filter>
             <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
                 <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%logger{40}","thread":"%thread","traceId":"%X{traceId:-}","tenantId":"%X{tenantId:-}","adminId":"%X{adminId:-}","apiKeyId":"%X{apiKeyId:-}","msg":"%replace(%msg){'\"','\\\"'}"%n%nopex,"ex":"%replace(%xException){'[\\r\\n]+','\\\\n'}"}%n</pattern>
             </encoder>
@@ -48,6 +80,9 @@
             </encoder>
         </appender>
 
+        <!-- Async console for INFO/DEBUG. neverBlock=true so the request thread does not stall
+             under burst; discarding only kicks in for INFO and below since WARN+ rides the sync
+             appender above. -->
         <appender name="ASYNC_CONSOLE_JSON" class="ch.qos.logback.classic.AsyncAppender">
             <appender-ref ref="CONSOLE_JSON"/>
             <queueSize>1024</queueSize>
@@ -56,6 +91,9 @@
             <includeCallerData>false</includeCallerData>
         </appender>
 
+        <!-- File backup async. discardingThreshold=0 + neverBlock=true: the file is a forensic
+             backstop, not the primary channel. Better to lose a few INFO lines than block writes
+             during a disk slowdown. -->
         <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
             <appender-ref ref="ROLLING_FILE"/>
             <queueSize>1024</queueSize>
@@ -65,11 +103,15 @@
         </appender>
 
         <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON_WARN_SYNC"/>
             <appender-ref ref="ASYNC_CONSOLE_JSON"/>
             <appender-ref ref="ASYNC_FILE"/>
         </root>
 
         <logger name="com.crosscert.passkey" level="INFO"/>
+        <!-- Dedicated "access" logger from AccessLogFilter — keep it at INFO so per-request lines
+             flow, additivity stays on so the root appenders pick them up. -->
+        <logger name="access" level="INFO"/>
         <!-- Quiet noisy infra in prod -->
         <logger name="org.hibernate.SQL" level="WARN"/>
         <logger name="org.hibernate.orm.jdbc.bind" level="WARN"/>

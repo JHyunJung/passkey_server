@@ -1,5 +1,6 @@
 package com.crosscert.passkey.infrastructure.web;
 
+import com.crosscert.passkey.common.filter.AccessLogFilter;
 import com.crosscert.passkey.common.filter.TraceIdFilter;
 import com.crosscert.passkey.ratelimit.RateLimitFilter;
 import com.crosscert.passkey.ratelimit.RateLimitProperties;
@@ -18,6 +19,7 @@ import org.springframework.core.Ordered;
  *
  * <pre>
  *   HIGHEST_PRECEDENCE      → TraceIdFilter          (MDC traceId set first)
+ *   HIGHEST_PRECEDENCE + 5  → AccessLogFilter        (wraps the chain; logs after status is set)
  *   HIGHEST_PRECEDENCE + 10 → TenantResolutionFilter (depends on traceId for logs)
  *   (M3) Security filter chain follows.
  * </pre>
@@ -44,6 +46,23 @@ public class WebFilterConfig {
   public FilterRegistrationBean<TraceIdFilter> traceIdFilterRegistration(TraceIdFilter filter) {
     FilterRegistrationBean<TraceIdFilter> bean = new FilterRegistrationBean<>(filter);
     bean.setOrder(Ordered.HIGHEST_PRECEDENCE);
+    bean.addUrlPatterns("/*");
+    return bean;
+  }
+
+  @Bean
+  public AccessLogFilter accessLogFilter() {
+    return new AccessLogFilter();
+  }
+
+  @Bean
+  public FilterRegistrationBean<AccessLogFilter> accessLogFilterRegistration(
+      AccessLogFilter filter) {
+    // Sits between TraceIdFilter and TenantResolutionFilter so traceId is in MDC when the line is
+    // emitted, and tenantId/apiKeyId/adminId — set further down the chain — are pulled out of MDC
+    // in the finally block after they have been populated.
+    FilterRegistrationBean<AccessLogFilter> bean = new FilterRegistrationBean<>(filter);
+    bean.setOrder(Ordered.HIGHEST_PRECEDENCE + 5);
     bean.addUrlPatterns("/*");
     return bean;
   }

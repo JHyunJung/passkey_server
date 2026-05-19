@@ -6,11 +6,12 @@
 
 | 시나리오 | 1차 액션 | 권장 reason | 후속 |
 |----------|---------|-------------|------|
-| **S1. 사용자가 단말 1개를 잃음 (다른 단말 보유)** | 사용자 본인이 RP 화면에서 잃은 credential을 삭제 (`DELETE /api/v1/rp/passkeys/{id}`) | `USER_REQUEST` | 다른 단말로 재로그인 후 새 credential 추가 |
+| **S1. 사용자가 단말 1개를 잃음 (다른 단말 보유)** | 사용자 본인이 RP 화면에서 잃은 credential을 삭제 (`DELETE /api/v1/rp/passkeys/{id}?externalUserId=<id>` — v0.2.0부터 ownership 검증) | `USER_REQUEST` | 다른 단말로 재로그인 후 새 credential 추가 |
 | **S2. 사용자가 모든 단말을 잃음** | RP CS가 사용자 신원확인 후 **RP_ADMIN이 admin console에서 모든 credential을 revoke** | `ADMIN_FORCED` | RP의 fallback 인증(예: 기존 ID/PW + OTP)으로 재로그인 → 신규 credential 등록 |
 | **S3. credential 유출/훔침 의심** | RP_ADMIN이 즉시 해당 credential 1개 revoke | `COMPROMISE_SUSPECTED` | audit log에서 그 credential의 최근 인증 history 확인. 필요 시 사용자 알림 |
-| **S4. 시스템이 자동 감지 (signature counter regression)** | `AuthenticationService`가 자동으로 credential을 revoke | `SIGNATURE_COUNTER_REGRESSION` | `audit.signature_counter.regression` ERROR 로그 + Prometheus alert. CS가 사용자에게 안내 |
+| **S4. 시스템이 자동 감지 (signature counter regression)** | `AuthenticationService`가 자동으로 credential을 revoke | `SIGNATURE_COUNTER_REGRESSION` | `audit.signature_counter.regression` ERROR 로그 + Prometheus alert. **로그/audit의 `reason` 필드로 세부 유형 (`DOWNGRADE_TO_ZERO` / `REPLAY` / `BACKWARDS`) 확인 후** CS가 사용자에게 안내. 세부 분석은 §6 참조 |
 | **S5. RP 사고로 credential 일괄 회수** | PLATFORM_OPERATOR가 SQL 또는 admin endpoint로 일괄 호출 | `ADMIN_FORCED` | 사용자 안내 메일 / 공지 |
+| **S6. CTAP 2.1 BS flag flip — 사용자가 새 디바이스 백업 활성화** | 자동 — `AuthenticationService`가 BS=false→true 감지 시 `CREDENTIAL_BACKUP_STATE_CHANGED` audit + `auth.backup_state.synced` WARN | 자동 audit (revoke 아님) | 컴플라이언스 RP는 audit 구독 후 자체 정책으로 trust downgrade 결정. 서버는 자동 차단하지 않음 |
 
 ## 2. 회수 시 자동으로 일어나는 일
 
@@ -39,10 +40,14 @@
 RP는 자체 백엔드에서 다음을 호출 가능 (X-API-Key 보유):
 
 ```
-DELETE /api/v1/rp/passkeys/{id}      # USER_REQUEST 자동 기록
+DELETE /api/v1/rp/passkeys/{id}?externalUserId=<userId>      # USER_REQUEST 자동 기록
 ```
 
-서버 로그에 `credential.revoke ... reason=USER_REQUEST` 기록.
+> **v0.2.0 BREAKING**: `externalUserId` query param이 필수입니다. 서버가 ownership을 검증하므로 다른 사용자의 credentialId UUID를 추측해 삭제하려는 시도는 `P006 Credential not found`로 응답되고, `credential.ownership.mismatch` WARN 로그 + Prometheus counter `passkey.security.ownership_mismatch` 가 증가합니다.
+
+서버 로그:
+- 성공: `credential.revoke.rp tenantId=… tenantUserId=… credentialDbId=… externalUserId=…`
+- 이어서: `credential.revoke … reason=USER_REQUEST refreshTokensRevoked=…` (doRevoke 본체)
 
 ## 5. 운영자 (PLATFORM_OPERATOR / RP_ADMIN) 화면에서 처리하려면
 
@@ -79,7 +84,50 @@ SELECT jti, issued_at, revoked_at, revoked_reason, client_ip, user_agent
  LIMIT 20;
 ```
 
-`pg_advisory_xact_lock` 기반 audit hash chain은 임의 조작 시 다음 일별 `AuditChainScheduler`가 자동 탐지.
+> 인프라 노트: v1.5에서 PostgreSQL → Oracle 19c로 이식하며 audit hash chain은 `DBMS_LOCK.ALLOCATE_UNIQUE + DBMS_LOCK.REQUEST(X_MODE, release_on_commit=TRUE)` 로 바뀌었습니다 (구 `pg_advisory_xact_lock`). 임의 조작 시 다음 일별 `AuditChainScheduler`가 여전히 자동 탐지.
+
+### 6.1 SIGNATURE_COUNTER_REGRESSION reason 분석
+
+자동 revoke된 credential의 audit row payload에 `reason` 필드가 들어 있습니다. 같은 P005 응답이지만 page 우선순위가 다릅니다:
+
+| reason | 1차 해석 | 추가 확인 |
+|--------|---------|----------|
+| `DOWNGRADE_TO_ZERO` | 가장 강한 clone 시그널 또는 authenticator firmware reset | 사용자에게 디바이스 변경 여부 확인. 펌웨어 reset이면 단발성이라 재등록으로 해결 |
+| `REPLAY`            | 카운터 진전 없음 — relay/replay 또는 두 디바이스 동시 사용 | 같은 시간대 동일 credential의 인증 audit가 두 IP에 분포하는지 확인 |
+| `BACKWARDS`         | 클래식 clone (counter 역행)        | 거의 항상 악성. 사용자 알림 + 다른 credential 점검 |
+
+```sql
+-- 최근 7일 regression의 reason 분포
+SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS d,
+       JSON_VALUE(payload, '$.reason') AS reason,
+       COUNT(*) AS n
+  FROM passkey.audit_log
+ WHERE event_type = 'SIGNATURE_COUNTER_REGRESSION'
+   AND created_at > SYSTIMESTAMP - INTERVAL '7' DAY
+ GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD'), JSON_VALUE(payload, '$.reason')
+ ORDER BY 1 DESC, 3 DESC;
+```
+
+### 6.2 Backup state flip 추적
+
+```sql
+-- 지난 24시간 동안 클라우드 백업으로 전환된(SYNCED) credentials
+SELECT created_at, subject_id, JSON_VALUE(payload, '$.credentialId') AS cred
+  FROM passkey.audit_log
+ WHERE event_type = 'CREDENTIAL_BACKUP_STATE_CHANGED'
+   AND JSON_VALUE(payload, '$.direction') = 'SYNCED'
+   AND created_at > SYSTIMESTAMP - INTERVAL '1' DAY;
+```
+
+Prometheus: `rate(passkey_backup_state_flips_total{direction="synced"}[1h])`.
+
+### 6.3 IDOR / 크로스테넌트 시그널
+
+| 메트릭 | 의미 | 알람 임계 (예) |
+|--------|------|---------------|
+| `passkey.security.ownership_mismatch` | RP가 다른 사용자의 credentialId로 rename/revoke 시도 | 5분 내 10건↑ |
+| `passkey.security.refresh_tid_mismatch` | tenant A 발급 refresh token이 tenant B의 API key로 들어옴 | 1건이라도 즉시 page |
+| `passkey.security.refresh_reuse_detected` | 이미 rotate된 refresh token 재제출 → family burn | 5분 내 3건↑ |
 
 ## 7. 정책 권장값
 

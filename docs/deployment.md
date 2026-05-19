@@ -22,7 +22,8 @@
    └────────────┬──────────────┘
                 ▼
    ┌─────────────────┐  ┌────────────────┐
-   │ Postgres primary │  │ Postgres reader│
+   │ Oracle 19c       │  │ Oracle reader  │
+   │ (Data Guard)     │  │  (optional)    │
    └──────────────────┘  └────────────────┘
 
    ┌─────────────────┐
@@ -30,21 +31,23 @@
    └─────────────────┘
 ```
 
-## DB 역할 3-tier
+## DB 사용자 3-tier (Oracle 19c)
 
-| 역할 | 권한 | 용도 |
-|------|------|------|
-| `app_migrator` | owner | Flyway 마이그레이션만. 운영에서는 슈퍼유저 권한 회수. |
-| `app_runtime` | NOBYPASSRLS, NOSUPERUSER | RP API 트래픽 + RP Admin 트래픽. RLS로 격리. |
-| `app_admin` | BYPASSRLS, NOSUPERUSER | Platform Operator 트래픽 (cross-tenant 조회). `PASSKEY_ADMIN_ENABLED=true`일 때만 활성. |
+PG의 `BYPASSRLS` 역할 속성은 Oracle에서는 `EXEMPT ACCESS POLICY` 시스템 권한으로 대체됩니다.
+
+| 사용자 | 권한 | 용도 |
+|--------|------|------|
+| `APP_MIGRATOR` | 모든 객체 owner. `CREATE USER`, `CREATE PUBLIC SYNONYM`, `EXECUTE ON SYS.DBMS_RLS / DBMS_LOCK / DBMS_SESSION` (WITH GRANT OPTION) | Flyway 마이그레이션 + VPD 정책 부착 전용. 운영에서는 슈퍼유저 권한 회수. |
+| `APP_RUNTIME` | 객체별 DML grant. `EXEMPT ACCESS POLICY` **미부여** | RP API 트래픽 + RP Admin 트래픽. VPD 적용 → 컨텍스트 미설정 시 0 rows. |
+| `APP_ADMIN` | 객체별 DML grant. `EXEMPT ACCESS POLICY` **부여** | Platform Operator 트래픽 (cross-tenant 조회). `PASSKEY_ADMIN_ENABLED=true`일 때만 활성. |
 
 ## 환경 변수
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SPRING_PROFILES_ACTIVE` | yes | 운영은 `prod` |
-| `SPRING_DATASOURCE_URL` | yes | `jdbc:postgresql://host:5432/passkey` |
-| `SPRING_DATASOURCE_USERNAME` | yes | `app_runtime` |
+| `SPRING_DATASOURCE_URL` | yes | `jdbc:oracle:thin:@//host:1521/SERVICE_NAME` (PDB service name for Cloud DB / RDS) |
+| `SPRING_DATASOURCE_USERNAME` | yes | `APP_RUNTIME` |
 | `SPRING_DATASOURCE_PASSWORD` | yes | 시크릿 매니저 |
 | `SPRING_FLYWAY_USER` | yes | `app_migrator` |
 | `SPRING_FLYWAY_PASSWORD` | yes | 시크릿 매니저 |

@@ -62,7 +62,10 @@ public class ChallengeStore {
     String key = buildKey(tenantId, ceremonyId);
     String json = redis.execute(CONSUME_SCRIPT, List.of(key));
     if (json == null) {
-      log.debug("challenge.consume.miss tenantId={} ceremonyId={}", tenantId, ceremonyId);
+      // INFO not DEBUG: a miss is either a legitimate timeout (≥5 min between options and verify),
+      // a replay attempt of an already-consumed challenge, or a client bug echoing the wrong
+      // ceremonyId. Operators need to be able to grep this without flipping log levels.
+      log.info("challenge.consume.miss tenantId={} ceremonyId={}", tenantId, ceremonyId);
       return Optional.empty();
     }
     try {

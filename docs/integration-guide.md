@@ -70,7 +70,7 @@ Response:
     "ceremonyId": "uuid",
     "challenge": "base64url",
     "rp": { "id": "card.co.kr", "name": "Card Company" },
-    "user": { "id": "base64url", "name": "user-12345", "displayName": "홍길동" },
+    "user": { "id": "base64url(16 bytes raw UUID)", "name": "user-12345", "displayName": "홍길동" },
     "pubKeyCredParams": [
       { "type": "public-key", "alg": -7 },
       { "type": "public-key", "alg": -257 }
@@ -81,13 +81,20 @@ Response:
       "userVerification": "preferred",
       "residentKey": "preferred",
       "requireResidentKey": false
-    }
+    },
+    "excludeCredentials": [
+      { "type": "public-key", "id": "base64url(credentialId)", "transports": "internal,hybrid" }
+    ]
   }
 }
 ```
 
+> **`user.id`**: 16-byte raw UUID를 base64url로 인코딩 (WebAuthn L3 §5.4.3 권장). 길이 22자.
+> 
+> **`excludeCredentials`**: 해당 사용자가 이미 보유한 active credential 목록. 신규 사용자에게는 필드 자체가 응답에서 omit됩니다 (`@JsonInclude(NON_EMPTY)`). 브라우저에 그대로 전달하면 같은 authenticator로 중복 등록 시도 시 `InvalidStateError`가 발생해 UX가 깔끔해집니다 (WebAuthn L3 §5.1.3).
+
 #### 등록 — Step 2: navigator.credentials.create
-브라우저가 위 옵션으로 `navigator.credentials.create({ publicKey: ... })` 호출 (`challenge` 등의 base64url 필드를 `ArrayBuffer`로 변환 필요).
+브라우저가 위 옵션으로 `navigator.credentials.create({ publicKey: ... })` 호출. `challenge`, `user.id`, `excludeCredentials[].id` 등 base64url 필드는 모두 `ArrayBuffer`로 디코드 후 전달.
 
 #### 등록 — Step 3: Verify
 ```http
@@ -106,7 +113,50 @@ X-API-Key: ...
 
 #### 인증 — 같은 패턴: `/options` → `navigator.credentials.get` → `/verify`
 
-성공 시 `accessToken` (JWT) + `refreshToken` 반환. RP 서비스는 이 토큰을 자기 세션으로 사용하거나 자기 토큰으로 교환.
+성공 시 `accessToken` (JWT) + `refreshToken` 반환.
+
+> **토큰 의미 (중요)**: `accessToken`은 **stateless** 입니다 — Passkey 서버는 발급 후 그것을 다시 검증하지 않습니다. RP 백엔드가 자체 세션 토큰으로 사용하거나 자기 토큰으로 교환하는 용도. 반면 `refreshToken`은 **stateful** — 서버 DB에 행이 있고, `POST /api/v1/rp/auth/refresh` 로 rotate 시 reuse 감지 + family burn 동작이 작동합니다.
+
+### 2.1 Credential 관리 API (`/api/v1/rp/passkeys`)
+
+| Method | Path | 설명 |
+|--------|------|------|
+| `GET`    | `?externalUserId=<id>`             | 사용자의 모든 credential 조회 |
+| `PATCH`  | `/{credentialDbId}`                 | nickname 변경 |
+| `DELETE` | `/{credentialDbId}?externalUserId=<id>` | 사용자가 자기 credential 삭제 (USER_REQUEST) |
+
+#### ⚠️ BREAKING: v0.2.0 — rename/revoke에 `externalUserId` 필수
+
+이전 버전은 path variable `id`만으로 동작했고, 같은 tenant 안에서 다른 사용자의 credentialId UUID를 알면 그 키를 조작할 수 있는 **IDOR 취약점**이 있었습니다. v0.2.0부터 서버가 ownership을 검증합니다.
+
+**마이그레이션**:
+
+| 작업 | v0.1.x | v0.2.0+ |
+|------|--------|---------|
+| Rename | `PATCH /{id}`<br>body: `{ "nickname": "..." }` | `PATCH /{id}`<br>body: `{ "externalUserId": "...", "nickname": "..." }` |
+| Revoke | `DELETE /{id}` | `DELETE /{id}?externalUserId=...` |
+
+소유자가 아닌 사용자가 시도하면 **`P006 Credential not found`** 가 반환됩니다 (실제 존재 여부와 무관 — enumeration 방어).
+
+```http
+PATCH /api/v1/rp/passkeys/8a3f...c1d2
+X-API-Key: pk_...
+Content-Type: application/json
+
+{ "externalUserId": "user-12345", "nickname": "내 아이폰" }
+```
+
+```http
+DELETE /api/v1/rp/passkeys/8a3f...c1d2?externalUserId=user-12345
+X-API-Key: pk_...
+```
+
+#### SDK (v0.2.0+) 사용 예시
+
+```ts
+await client.renameCredential("8a3f...c1d2", "user-12345", "내 아이폰");
+await client.revokeCredential("8a3f...c1d2", "user-12345");
+```
 
 ## 3. 통합 체크리스트
 

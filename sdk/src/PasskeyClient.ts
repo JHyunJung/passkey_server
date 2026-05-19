@@ -3,6 +3,7 @@ import type {
   ApiEnvelope,
   AuthenticateOptions,
   AuthenticateResult,
+  ExcludeCredentialHint,
   ListedCredential,
   PasskeyClientOptions,
   RegisterOptions,
@@ -44,6 +45,7 @@ export class PasskeyClient {
         residentKey: string;
         requireResidentKey: boolean;
       };
+      excludeCredentials?: ExcludeCredentialHint[];
     }>("/api/v1/rp/passkeys/register/options", {
       externalUserId: opts.externalUserId,
       displayName: opts.displayName,
@@ -71,6 +73,15 @@ export class PasskeyClient {
             options.authenticatorSelection.residentKey as ResidentKeyRequirement,
           requireResidentKey: options.authenticatorSelection.requireResidentKey,
         },
+        // Server-side NON_EMPTY serialisation: the field is undefined for first-time enrolment.
+        // Forwarding undefined to the authenticator is equivalent to omitting it.
+        excludeCredentials: options.excludeCredentials?.map((c) => ({
+          type: "public-key" as const,
+          id: base64UrlToBuffer(c.id),
+          transports: c.transports
+            ? (c.transports.split(",").filter(Boolean) as AuthenticatorTransport[])
+            : undefined,
+        })),
       },
     })) as PublicKeyCredential | null;
 
@@ -147,6 +158,33 @@ export class PasskeyClient {
     );
   }
 
+  /**
+   * Renames the caller's own credential. The server verifies that {@code credentialDbId} actually
+   * belongs to {@code externalUserId} — IDOR defence at the application layer. RP-facing auth
+   * (X-API-Key) only proves the tenant, not the end user.
+   */
+  async renameCredential(
+    credentialDbId: string,
+    externalUserId: string,
+    nickname: string | null,
+  ): Promise<ListedCredential> {
+    return await this.patch<ListedCredential>(
+      `/api/v1/rp/passkeys/${encodeURIComponent(credentialDbId)}`,
+      { externalUserId, nickname },
+    );
+  }
+
+  /**
+   * Revokes the caller's own credential. Same ownership check as {@link renameCredential}. The
+   * server burns outstanding refresh tokens for the same user on success so stale sessions cannot
+   * keep refreshing access tokens after the passkey is gone.
+   */
+  async revokeCredential(credentialDbId: string, externalUserId: string): Promise<void> {
+    await this.delete(
+      `/api/v1/rp/passkeys/${encodeURIComponent(credentialDbId)}?externalUserId=${encodeURIComponent(externalUserId)}`,
+    );
+  }
+
   // ---- transport ----------------------------------------------------------
 
   private async get<T>(path: string): Promise<T> {
@@ -164,6 +202,32 @@ export class PasskeyClient {
       body: JSON.stringify(body),
     });
     return this.unwrap<T>(res);
+  }
+
+  private async patch<T>(path: string, body: unknown): Promise<T> {
+    const res = await this.fetchFn(this.baseUrl + path, {
+      method: "PATCH",
+      headers: this.defaultHeaders(),
+      body: JSON.stringify(body),
+    });
+    return this.unwrap<T>(res);
+  }
+
+  private async delete(path: string): Promise<void> {
+    const res = await this.fetchFn(this.baseUrl + path, {
+      method: "DELETE",
+      headers: this.defaultHeaders(),
+    });
+    // DELETE returns 204 No Content with an empty body — there is nothing for unwrap() to parse,
+    // so we only surface non-2xx as a typed error.
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new PasskeyApiError(
+        `HTTP_${res.status}`,
+        text.trim().slice(0, 256) || res.statusText || "delete failed",
+        { status: res.status },
+      );
+    }
   }
 
   private defaultHeaders(): Record<string, string> {

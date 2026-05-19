@@ -24,15 +24,15 @@ import lombok.NoArgsConstructor;
  */
 @Getter
 @Entity
-@Table(name = "refresh_token", schema = "passkey")
+@Table(name = "refresh_token")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class RefreshToken extends TenantScopedEntity {
 
-  @Column(name = "tenant_user_id", nullable = false, updatable = false, columnDefinition = "uuid")
+  @Column(name = "tenant_user_id", nullable = false, updatable = false)
   private UUID tenantUserId;
 
   /** Previous jti (for rotation lineage). NULL on first issuance. */
-  @Column(name = "parent_jti", updatable = false, columnDefinition = "uuid")
+  @Column(name = "parent_jti", updatable = false)
   private UUID parentJti;
 
   @Column(name = "issued_at", nullable = false, updatable = false)

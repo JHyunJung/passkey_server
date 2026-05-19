@@ -17,6 +17,10 @@ public enum AuditEventType {
   CREDENTIAL_AUTHENTICATED,
   SIGNATURE_COUNTER_REGRESSION,
   CREDENTIAL_AUTH_RATE_LIMIT,
+  // CTAP 2.1 Backup State (BS) flag change. Emitted when a passkey's syncable status flips
+  // between sessions (e.g. iCloud Keychain or Google Password Manager backup turning on/off).
+  // Compliance-sensitive RPs use this to revoke or downgrade trust on backed-up credentials.
+  CREDENTIAL_BACKUP_STATE_CHANGED,
 
   // ---------- CREDENTIAL_LIFECYCLE ----------
   CREDENTIAL_REVOKED,

@@ -7,7 +7,7 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 /**
- * Fixed-window counter. Each (key, minute) bucket increments; the first INCR sets a 75s TTL
+ * Fixed-window counter. Each (key, minute) bucket increments; the first INCR sets the TTL
  * atomically in the same Lua call. Simpler than sliding-window — accuracy at the boundary is fine
  * for abuse prevention. Lua keeps INCR+EXPIRE in a single round-trip.
  */
@@ -16,7 +16,12 @@ import org.springframework.stereotype.Component;
 public class RateLimiter {
 
   private static final String NS = "passkey:ratelimit";
-  private static final String TTL_SECONDS = "75";
+  private static final long WINDOW_SECONDS = 60L;
+  // Safety margin keeps the bucket alive a bit past its window so a burst that lands exactly on
+  // the minute boundary still observes the previous bucket's tail. 15s is enough at our scale.
+  private static final long BUCKET_TTL_SAFETY_MARGIN_SECONDS = 15L;
+  private static final String BUCKET_TTL_SECONDS =
+      Long.toString(WINDOW_SECONDS + BUCKET_TTL_SAFETY_MARGIN_SECONDS);
 
   /** Lua: atomic INCR + (EXPIRE on first increment). Returns the new counter value. */
   private static final DefaultRedisScript<Long> INCR_SCRIPT =
@@ -30,9 +35,9 @@ public class RateLimiter {
 
   /** Returns {@code true} when the request is within the limit. */
   public boolean tryAcquire(String bucket, int limitPerMinute) {
-    long minute = System.currentTimeMillis() / 60_000;
+    long minute = System.currentTimeMillis() / (WINDOW_SECONDS * 1000L);
     String key = NS + ":" + bucket + ":" + minute;
-    Long count = redis.execute(INCR_SCRIPT, List.of(key), TTL_SECONDS);
+    Long count = redis.execute(INCR_SCRIPT, List.of(key), BUCKET_TTL_SECONDS);
     return count != null && count <= limitPerMinute;
   }
 }

@@ -16,7 +16,7 @@ import lombok.NoArgsConstructor;
 
 @Getter
 @Entity
-@Table(name = "tenant_attestation_policy", schema = "passkey")
+@Table(name = "tenant_attestation_policy")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class TenantAttestationPolicy extends TenantScopedEntity {
 
@@ -25,8 +25,9 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
    */
   private static final UUID ZERO_AAGUID = new UUID(0L, 0L);
 
+  // "mode" is reserved in Oracle; we map to the more explicit `attestation_mode` column instead.
   @Enumerated(EnumType.STRING)
-  @Column(name = "mode", nullable = false)
+  @Column(name = "attestation_mode", nullable = false)
   private AttestationMode mode;
 
   /** CSV of AAGUIDs (string-form UUIDs). */
@@ -41,6 +42,8 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
    * anchors. Requires server-side {@code passkey.mds.enabled=true}; otherwise registration fails
    * with {@code MDS_UNAVAILABLE}.
    */
+  // Oracle 19c lacks SQL BOOLEAN; pin to TINYINT so the schema validator accepts NUMBER(1).
+  @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.TINYINT)
   @Column(name = "mds_strict", nullable = false)
   private boolean mdsStrict;
 
@@ -49,6 +52,7 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
    * authenticator that omits its AAGUID (or reports zeros) is rejected in every mode — closing the
    * "null AAGUID bypasses DENYLIST/ANY" gap (P0-3).
    */
+  @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.TINYINT)
   @Column(name = "allow_zero_aaguid", nullable = false)
   private boolean allowZeroAaguid;
 
@@ -58,6 +62,7 @@ public class TenantAttestationPolicy extends TenantScopedEntity {
    * (e.g. iCloud Keychain, Google Password Manager). Enforced in {@code
    * RegistrationService.finishRegistration} via {@link #acceptsSyncable(boolean)}.
    */
+  @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.TINYINT)
   @Column(name = "allow_syncable", nullable = false)
   private boolean allowSyncable;
 
