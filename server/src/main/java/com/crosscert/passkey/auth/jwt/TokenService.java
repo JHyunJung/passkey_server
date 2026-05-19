@@ -6,16 +6,35 @@ import com.crosscert.passkey.auth.jwt.repository.RefreshTokenRepository;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.text.ParseException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import javax.crypto.SecretKey;
@@ -24,15 +43,24 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * HMAC-SHA256 signed JWT issuance for end-user sessions.
+ * JWT issuance and verification.
+ *
+ * <p>Supports two signing algorithms, selectable via {@code passkey.jwt.algorithm}:
+ *
+ * <ul>
+ *   <li>{@code HS256} — legacy HMAC-SHA256, env-provided 32-byte secret.
+ *   <li>{@code RS256} — RSA-SHA256, env-provided PEM keypair. Public half exposed at {@code
+ *       /.well-known/jwks.json} so RP backends verify locally.
+ * </ul>
+ *
+ * <p>Issuance: HS256 uses {@code jjwt}; RS256 uses {@code nimbus-jose-jwt} so the {@code kid}
+ * header is added cleanly. Verification uses {@code jjwt} throughout — it accepts both HMAC and RSA
+ * keys — and tries every configured key (current + previous, both algorithms) so outstanding tokens
+ * keep working across rotations and the HS→RS cutover.
  *
  * <p>Access tokens are stateless (signature + typ check). Refresh tokens are stateful: every issued
  * refresh records a {@link RefreshToken} row keyed by its {@code jti}, allowing per-token
  * revocation, family-wide revocation on reuse detection, and audit-grade lifecycle traceability.
- *
- * <p>Verification is split into {@link #verifyAccess} and {@link #verifyRefresh}: each rejects
- * tokens whose {@code typ} claim does not match, preventing refresh tokens being used as access
- * tokens (or vice versa).
  */
 @Slf4j
 @Service
@@ -46,23 +74,50 @@ public class TokenService {
   private final io.micrometer.core.instrument.Counter tidMismatchCounter;
   private final io.micrometer.core.instrument.Counter reuseDetectedCounter;
 
+  /** Loaded once at startup so per-request signing has zero PEM-parsing overhead. */
+  private RSAPrivateKey rsaPrivateKey;
+
+  private String currentKid;
+
+  /** kid → public key. Includes both current and previous when rotation is in progress. */
+  private final Map<String, RSAPublicKey> rsaPublicKeysByKid = new LinkedHashMap<>();
+
   public TokenService(
       JwtProperties props,
       RefreshTokenRepository refreshRepo,
       io.micrometer.core.instrument.MeterRegistry registry) {
     this.props = props;
     this.refreshRepo = refreshRepo;
-    // Cross-tenant refresh attempts. Sustained increase ≈ token exfil or confused-deputy.
     this.tidMismatchCounter =
         io.micrometer.core.instrument.Counter.builder("passkey.security.refresh_tid_mismatch")
             .register(registry);
-    // Refresh-token family burned because a revoked token was re-presented. ERROR-level signal.
     this.reuseDetectedCounter =
         io.micrometer.core.instrument.Counter.builder("passkey.security.refresh_reuse_detected")
             .register(registry);
   }
 
-  private SecretKey key() {
+  @PostConstruct
+  public void loadRsaKeys() {
+    if (props.hasRsaKeypair()) {
+      this.rsaPrivateKey = parsePrivate(props.rsaPrivatePem());
+      this.rsaPublicKeysByKid.put(props.kid(), parsePublic(props.rsaPublicPem()));
+      this.currentKid = props.kid();
+    }
+    if (props.hasPreviousRsaKeypair()) {
+      this.rsaPublicKeysByKid.put(props.kidPrevious(), parsePublic(props.rsaPublicPemPrevious()));
+    }
+    if (props.isRs256() && rsaPrivateKey == null) {
+      throw new IllegalStateException("RS256 selected but no RSA keypair could be loaded");
+    }
+  }
+
+  /** Snapshot of RSA public keys for the JWKS controller. Insertion order: current first. */
+  public Map<String, RSAPublicKey> rsaPublicKeysByKid() {
+    // Map.copyOf does not preserve insertion order; LinkedHashMap copy does.
+    return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(rsaPublicKeysByKid));
+  }
+
+  private SecretKey hmacKey() {
     byte[] keyBytes = props.secret().getBytes(StandardCharsets.UTF_8);
     if (keyBytes.length < 32) {
       throw new IllegalStateException("passkey.jwt.secret must be at least 32 bytes");
@@ -70,17 +125,11 @@ public class TokenService {
     return Keys.hmacShaKeyFor(keyBytes);
   }
 
-  /**
-   * Returns the previous signing key when rotation is in progress, otherwise {@code null}. Used
-   * only for verification fallback — outstanding tokens signed with the previous secret continue to
-   * verify until they expire/rotate onto the primary key.
-   */
-  private SecretKey previousKey() {
+  private SecretKey previousHmacKey() {
     if (!props.hasPreviousSecret()) {
       return null;
     }
-    byte[] keyBytes = props.previousSecret().getBytes(StandardCharsets.UTF_8);
-    return Keys.hmacShaKeyFor(keyBytes);
+    return Keys.hmacShaKeyFor(props.previousSecret().getBytes(StandardCharsets.UTF_8));
   }
 
   /**
@@ -92,22 +141,12 @@ public class TokenService {
     return issueInternal(tenantId, tenantUserId, externalUserId, null, null, null);
   }
 
-  /** Same as {@link #issue} with client metadata captured for forensics. */
   @Transactional
   public TokenPair issue(
       UUID tenantId, UUID tenantUserId, String externalUserId, String clientIp, String userAgent) {
     return issueInternal(tenantId, tenantUserId, externalUserId, null, clientIp, userAgent);
   }
 
-  /**
-   * Rotates a refresh token: verify → revoke (ROTATED) → issue a new pair whose refresh row links
-   * back to the rotated token via {@code parent_jti}. If the presented token is already revoked,
-   * the entire rotation family is burned ({@link ErrorCode#REFRESH_TOKEN_REUSED}).
-   *
-   * <p>Tenant context comes from the token's {@code tid} claim (signed by the server) — the caller
-   * does not need to read {@code TenantContextHolder} explicitly. The X-API-Key chain still pins
-   * the RP identity at the network layer.
-   */
   @Transactional
   public TokenPair rotate(String presentedRefresh, String clientIp, String userAgent) {
     Claims claims = parseSigned(presentedRefresh, TYP_REFRESH);
@@ -116,18 +155,10 @@ public class TokenService {
     UUID tenantId = parseTid(claims);
     String externalUserId = claims.get("xuid", String.class);
 
-    // Cross-tenant refresh defence. The RP backend authenticates with X-API-Key (which pins
-    // ambient TenantContext), but the refresh token's tid claim is the JWT-signed source of
-    // truth for which tenant the original ceremony ran under. A mismatch means someone is
-    // presenting a refresh token issued for tenant A under tenant B's API key — possible token
-    // exfil or a confused-deputy bug. Refuse before touching the DB.
     TenantContextHolder.optional()
         .ifPresent(
             ctx -> {
               if (!ctx.tenantId().equals(tenantId)) {
-                // clientIp / userAgent are the only forensic pivots we have here — the request
-                // never reached the API key auth layer with the legitimate tenant binding. Sanitise
-                // both: rotate() forwards them straight from request headers.
                 log.warn(
                     "token.refresh.tid_mismatch ambientTenantId={} claimTenantId={} jti={} "
                         + "clientIp={} userAgent={}",
@@ -148,7 +179,6 @@ public class TokenService {
     }
     RefreshToken row = opt.get();
     if (row.isRevoked()) {
-      // Reuse detected → burn the family + audit trail.
       int burned =
           refreshRepo.revokeFamily(
               userId,
@@ -176,15 +206,10 @@ public class TokenService {
     return issueInternal(tenantId, userId, externalUserId, row.getId(), clientIp, userAgent);
   }
 
-  /** Verifies a token and rejects anything that is not an access token. Stateless. */
   public Claims verifyAccess(String token) {
     return parseSigned(token, TYP_ACCESS);
   }
 
-  /**
-   * Verifies a refresh token: signature + typ + DB row exists and is not revoked. Used by callers
-   * who want to inspect the claims without rotating (rare — most callers want {@link #rotate}).
-   */
   @Transactional(readOnly = true)
   public Claims verifyRefresh(String token) {
     Claims claims = parseSigned(token, TYP_REFRESH);
@@ -222,31 +247,20 @@ public class TokenService {
       String userAgent) {
     Instant now = Instant.now();
     UUID jti = UUID.randomUUID();
+    Instant accessExp = now.plus(Duration.ofSeconds(props.accessTtlSeconds()));
     Instant refreshExp = now.plus(Duration.ofSeconds(props.refreshTtlSeconds()));
 
-    String access =
-        Jwts.builder()
-            .issuer(props.issuer())
-            .subject(tenantUserId.toString())
-            .claim("tid", tenantId.toString())
-            .claim("xuid", externalUserId)
-            .claim("typ", TYP_ACCESS)
-            .issuedAt(Date.from(now))
-            .expiration(Date.from(now.plus(Duration.ofSeconds(props.accessTtlSeconds()))))
-            .signWith(key())
-            .compact();
-    String refresh =
-        Jwts.builder()
-            .issuer(props.issuer())
-            .subject(tenantUserId.toString())
-            .claim("tid", tenantId.toString())
-            .claim("xuid", externalUserId)
-            .claim("typ", TYP_REFRESH)
-            .id(jti.toString())
-            .issuedAt(Date.from(now))
-            .expiration(Date.from(refreshExp))
-            .signWith(key())
-            .compact();
+    String access;
+    String refresh;
+    if (props.isRs256()) {
+      access = signRs256(tenantId, tenantUserId, externalUserId, TYP_ACCESS, null, now, accessExp);
+      refresh =
+          signRs256(tenantId, tenantUserId, externalUserId, TYP_REFRESH, jti, now, refreshExp);
+    } else {
+      access = signHs256(tenantId, tenantUserId, externalUserId, TYP_ACCESS, null, now, accessExp);
+      refresh =
+          signHs256(tenantId, tenantUserId, externalUserId, TYP_REFRESH, jti, now, refreshExp);
+    }
 
     refreshRepo.save(
         RefreshToken.create(
@@ -261,42 +275,120 @@ public class TokenService {
     return new TokenPair(access, refresh, props.accessTtlSeconds());
   }
 
-  private Claims parseSigned(String token, String expectedTyp) {
-    Claims claims;
+  private String signHs256(
+      UUID tenantId,
+      UUID tenantUserId,
+      String externalUserId,
+      String typ,
+      UUID jti,
+      Instant now,
+      Instant exp) {
+    var builder =
+        Jwts.builder()
+            .issuer(props.issuer())
+            .subject(tenantUserId.toString())
+            .claim("tid", tenantId.toString())
+            .claim("xuid", externalUserId)
+            .claim("typ", typ)
+            .issuedAt(Date.from(now))
+            .expiration(Date.from(exp));
+    if (jti != null) {
+      builder.id(jti.toString());
+    }
+    return builder.signWith(hmacKey()).compact();
+  }
+
+  private String signRs256(
+      UUID tenantId,
+      UUID tenantUserId,
+      String externalUserId,
+      String typ,
+      UUID jti,
+      Instant now,
+      Instant exp) {
+    JWTClaimsSet.Builder claims =
+        new JWTClaimsSet.Builder()
+            .issuer(props.issuer())
+            .subject(tenantUserId.toString())
+            .claim("tid", tenantId.toString())
+            .claim("xuid", externalUserId)
+            .claim("typ", typ)
+            .issueTime(Date.from(now))
+            .expirationTime(Date.from(exp));
+    if (jti != null) {
+      claims.jwtID(jti.toString());
+    }
+    JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(currentKid).build();
+    SignedJWT signed = new SignedJWT(header, claims.build());
     try {
-      claims = Jwts.parser().verifyWith(key()).build().parseSignedClaims(token).getPayload();
-    } catch (JwtException primaryFailure) {
-      // Rotation fallback: when a previous secret is configured, also accept tokens signed with it.
-      // Outstanding tokens issued before the rotation keep working until they expire, at which
-      // point the user rotates onto the primary key automatically.
-      SecretKey prev = previousKey();
-      if (prev == null) {
-        log.warn(
-            "jwt.verify.failed typ={} cause={} reason={}",
-            expectedTyp,
-            primaryFailure.getClass().getSimpleName(),
-            primaryFailure.getMessage());
-        throw new BusinessException(ErrorCode.INVALID_TOKEN, primaryFailure.getMessage());
+      signed.sign(new RSASSASigner(rsaPrivateKey));
+    } catch (JOSEException e) {
+      throw new IllegalStateException("RS256 sign failed", e);
+    }
+    return signed.serialize();
+  }
+
+  /**
+   * Verify a token by trying every configured key — HS primary, HS previous, then every RSA kid in
+   * insertion order. The {@code kid} header (when present) short-circuits straight to the matching
+   * RSA key. jjwt's parser accepts both {@link SecretKey} and RSA {@code PublicKey}, so a single
+   * code path handles both algorithms.
+   */
+  private Claims parseSigned(String token, String expectedTyp) {
+    Claims claims = null;
+    JwtException lastFailure = null;
+
+    String kid = peekKid(token);
+    String alg = peekAlgorithm(token);
+
+    List<SecretKey> hmacCandidates = new ArrayList<>(2);
+    List<RSAPublicKey> rsaCandidates = new ArrayList<>(4);
+    boolean rsToken = JWSAlgorithm.RS256.getName().equals(alg);
+    if (rsToken) {
+      if (kid != null && rsaPublicKeysByKid.containsKey(kid)) {
+        rsaCandidates.add(rsaPublicKeysByKid.get(kid));
+      } else {
+        rsaCandidates.addAll(rsaPublicKeysByKid.values());
       }
+    } else {
+      if (props.hasHmacSecret()) {
+        hmacCandidates.add(hmacKey());
+        SecretKey prev = previousHmacKey();
+        if (prev != null) {
+          hmacCandidates.add(prev);
+        }
+      }
+      rsaCandidates.addAll(rsaPublicKeysByKid.values());
+    }
+
+    for (SecretKey candidate : hmacCandidates) {
       try {
-        claims = Jwts.parser().verifyWith(prev).build().parseSignedClaims(token).getPayload();
-        // Promoted to INFO: while rotation is in progress this gives ops a heartbeat that some
-        // traffic still rides the previous key, so they know when it's safe to drop it.
-        log.info("jwt.verify.previous_secret_used typ={}", expectedTyp);
-      } catch (JwtException previousFailure) {
-        log.warn(
-            "jwt.verify.failed typ={} cause={} primary={} previous={}",
-            expectedTyp,
-            previousFailure.getClass().getSimpleName(),
-            primaryFailure.getMessage(),
-            previousFailure.getMessage());
-        throw new BusinessException(ErrorCode.INVALID_TOKEN, previousFailure.getMessage());
+        claims = Jwts.parser().verifyWith(candidate).build().parseSignedClaims(token).getPayload();
+        break;
+      } catch (JwtException e) {
+        lastFailure = e;
       }
     }
+    if (claims == null) {
+      for (PublicKey candidate : rsaCandidates) {
+        try {
+          claims =
+              Jwts.parser().verifyWith(candidate).build().parseSignedClaims(token).getPayload();
+          break;
+        } catch (JwtException e) {
+          lastFailure = e;
+        }
+      }
+    }
+
+    if (claims == null) {
+      String reason = lastFailure == null ? "no candidate keys" : lastFailure.getMessage();
+      log.warn("jwt.verify.failed typ={} reason={}", expectedTyp, reason);
+      throw new BusinessException(ErrorCode.INVALID_TOKEN, reason);
+    }
+
     String actualTyp = claims.get("typ", String.class);
     if (!expectedTyp.equals(actualTyp)) {
-      // Token type confusion is a known attack class (refresh-as-access). Log it loudly so any
-      // attempt shows up in security dashboards.
       log.warn(
           "jwt.verify.wrong_typ expected={} actual={} jti={}",
           expectedTyp,
@@ -306,6 +398,22 @@ public class TokenService {
           ErrorCode.INVALID_TOKEN, "wrong token type: expected " + expectedTyp);
     }
     return claims;
+  }
+
+  private static String peekAlgorithm(String token) {
+    try {
+      return SignedJWT.parse(token).getHeader().getAlgorithm().getName();
+    } catch (ParseException | NullPointerException e) {
+      return null;
+    }
+  }
+
+  private static String peekKid(String token) {
+    try {
+      return SignedJWT.parse(token).getHeader().getKeyID();
+    } catch (ParseException e) {
+      return null;
+    }
   }
 
   private static UUID parseTid(Claims claims) {
@@ -330,5 +438,33 @@ public class TokenService {
     } catch (IllegalArgumentException e) {
       throw new BusinessException(ErrorCode.INVALID_TOKEN, "malformed jti");
     }
+  }
+
+  private static RSAPrivateKey parsePrivate(String pem) {
+    try {
+      byte[] der = pemToDer(pem, "PRIVATE KEY");
+      return (RSAPrivateKey)
+          KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(der));
+    } catch (Exception e) {
+      throw new IllegalStateException("Cannot parse RSA private PEM", e);
+    }
+  }
+
+  private static RSAPublicKey parsePublic(String pem) {
+    try {
+      byte[] der = pemToDer(pem, "PUBLIC KEY");
+      return (RSAPublicKey)
+          KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der));
+    } catch (Exception e) {
+      throw new IllegalStateException("Cannot parse RSA public PEM", e);
+    }
+  }
+
+  private static byte[] pemToDer(String pem, String label) {
+    String trimmed =
+        pem.replace("-----BEGIN " + label + "-----", "")
+            .replace("-----END " + label + "-----", "")
+            .replaceAll("\\s+", "");
+    return Base64.getDecoder().decode(trimmed);
   }
 }

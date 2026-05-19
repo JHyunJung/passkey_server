@@ -218,6 +218,7 @@ public class AdminSecurityConfig {
             "/v3/api-docs/**",
             "/swagger-ui/**",
             "/swagger-ui.html",
+            "/.well-known/jwks.json",
             "/error")
         .csrf(AbstractHttpConfigurer::disable)
         // Health/info/error are JSON; Swagger needs to render HTML+inline script, so keep CSP off

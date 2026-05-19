@@ -62,10 +62,13 @@ dependencies {
     // MetadataBLOBBasedTrustAnchorRepository implementation.
     implementation("com.webauthn4j:webauthn4j-metadata:0.27.0.RELEASE")
 
-    // JWT — M3 BE-011
+    // JWT — M3 BE-011. jjwt covers the legacy HS256 verify path; nimbus-jose-jwt drives RS256
+    // issuance and the JWKS endpoint. Both libraries co-exist during the HS→RS cutover window;
+    // jjwt can be removed once outstanding HS256 tokens have expired.
     implementation("io.jsonwebtoken:jjwt-api:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
+    implementation("com.nimbusds:nimbus-jose-jwt:9.40")
 
     // Password/secret hashing — M3 BE-012 (Argon2 for API keys)
     implementation("de.mkammerer:argon2-jvm:2.11")

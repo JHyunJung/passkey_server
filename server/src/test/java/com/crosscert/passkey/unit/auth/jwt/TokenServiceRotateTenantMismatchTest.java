@@ -42,13 +42,21 @@ class TokenServiceRotateTenantMismatchTest {
     JwtProperties props =
         new JwtProperties(
             "passkey-test",
+            "HS256",
             "0123456789abcdef0123456789abcdef", // 32 bytes, satisfies validator
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
             null,
             900L,
             2_592_000L);
     service =
         new TokenService(
             props, refreshRepo, new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+    service.loadRsaKeys();
   }
 
   @AfterEach

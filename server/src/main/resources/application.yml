@@ -106,13 +106,26 @@ passkey:
     same-site: ${PASSKEY_COOKIE_SAME_SITE:Lax}
   jwt:
     issuer: ${PASSKEY_JWT_ISSUER:passkey-platform}
+    # Signing algorithm. HS256 (legacy symmetric) or RS256 (asymmetric RSA, JWKS-served public key).
+    # During the HS→RS cutover both algorithms can coexist for verification — see TokenService.
+    algorithm: ${PASSKEY_JWT_ALGORITHM:HS256}
     # SEC-3: no default value. JwtProperties enforces >=32-byte secret at startup, so missing env
-    # var fails fast instead of silently shipping a known string.
+    # var fails fast instead of silently shipping a known string. Required when algorithm=HS256.
     secret: ${PASSKEY_JWT_SECRET:}
     # Optional previous secret for zero-downtime key rotation. When set, outstanding tokens signed
     # with the previous secret remain valid for verification (new tokens are signed with the
     # primary). Clear once the longest refresh-ttl window has passed.
     previous-secret: ${PASSKEY_JWT_SECRET_PREVIOUS:}
+    # RS256 keypair (PEM, PKCS#8 private + SPKI public). Required when algorithm=RS256.
+    # Public key is served at /.well-known/jwks.json so RP backends verify locally.
+    rsa-private-pem: ${PASSKEY_JWT_RSA_PRIVATE_PEM:}
+    rsa-public-pem: ${PASSKEY_JWT_RSA_PUBLIC_PEM:}
+    kid: ${PASSKEY_JWT_KID:}
+    # Previous RS256 keypair for zero-downtime rotation. Public key remains in JWKS so outstanding
+    # tokens verify until they expire; new tokens are signed with the primary keypair.
+    rsa-private-pem-previous: ${PASSKEY_JWT_RSA_PRIVATE_PEM_PREVIOUS:}
+    rsa-public-pem-previous: ${PASSKEY_JWT_RSA_PUBLIC_PEM_PREVIOUS:}
+    kid-previous: ${PASSKEY_JWT_KID_PREVIOUS:}
     access-ttl-seconds: 900
     refresh-ttl-seconds: 2592000
   rate-limit:
