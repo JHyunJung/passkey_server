@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Passkey RP Demo</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        max-width: 640px;
+        margin: 40px auto;
+        padding: 0 16px;
+        color: #1a1a1a;
+      }
+      h1 { font-size: 20px; }
+      section {
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 16px;
+        margin: 16px 0;
+      }
+      h2 { font-size: 15px; margin-top: 0; }
+      input {
+        padding: 6px 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 14px;
+      }
+      button {
+        padding: 6px 12px;
+        border: 0;
+        border-radius: 4px;
+        background: #2563eb;
+        color: #fff;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button:disabled { background: #9ca3af; cursor: not-allowed; }
+      pre {
+        background: #f5f5f5;
+        padding: 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .ok { color: #16a34a; }
+      .err { color: #dc2626; }
+      .muted { color: #6b7280; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Passkey RP Demo</h1>
+    <p class="muted">
+      이 페이지는 <code>passkey-rp-spring-boot-starter</code> SDK를 쓰는 RP 서버의 동작 예시입니다.
+      ceremony 엔드포인트(<code>/passkey/**</code>)는 SDK가 자동 제공합니다.
+    </p>
+
+    <section>
+      <h2>1. 회원가입</h2>
+      <input id="displayName" placeholder="표시 이름" value="홍길동" />
+      <button id="btnSignup">가입</button>
+      <p class="muted">RP가 직접 구현한 <code>POST /users</code> — externalUserId를 발급합니다.</p>
+      <pre id="signupOut">—</pre>
+    </section>
+
+    <section>
+      <h2>2. 패스키 등록</h2>
+      <button id="btnRegister" disabled>이 기기에 패스키 등록</button>
+      <p class="muted">SDK 제공 <code>/passkey/register/begin</code> · <code>/finish</code></p>
+      <pre id="registerOut">먼저 회원가입을 완료하세요.</pre>
+    </section>
+
+    <section>
+      <h2>3. 패스키 로그인</h2>
+      <button id="btnLogin">패스키로 로그인</button>
+      <p class="muted">SDK 제공 <code>/passkey/authenticate/begin</code> · <code>/finish</code></p>
+      <pre id="loginOut">—</pre>
+    </section>
+
+    <section>
+      <h2>4. 로그인 후 보호된 API</h2>
+      <button id="btnMe" disabled>GET /me</button>
+      <button id="btnCreds" disabled>GET /credentials</button>
+      <p class="muted">
+        accessToken을 <code>Authorization: Bearer</code>로 전달. <code>/me</code>는 RP 구현,
+        <code>/credentials</code>는 SDK <code>PasskeyClient</code> 위임.
+      </p>
+      <pre id="apiOut">먼저 로그인하세요.</pre>
+    </section>
+
+    <script>
+      // --- base64url <-> ArrayBuffer 헬퍼 (WebAuthn 표준 인코딩) ---
+      const b64uToBuf = (s) => {
+        const pad = "=".repeat((4 - (s.length % 4)) % 4);
+        const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
+        const bin = atob(b64);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        return buf.buffer;
+      };
+      const bufToB64u = (buf) => {
+        const bytes = new Uint8Array(buf);
+        let bin = "";
+        for (const b of bytes) bin += String.fromCharCode(b);
+        return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      };
+
+      // --- API 헬퍼: 모든 응답은 ApiResponse<T> envelope ---
+      const post = async (path, body, token) => {
+        const headers = { "Content-Type": "application/json" };
+        if (token) headers["Authorization"] = "Bearer " + token;
+        const res = await fetch(path, {
+          method: "POST",
+          headers,
+          body: body == null ? undefined : JSON.stringify(body),
+        });
+        const json = await res.json();
+        if (!res.ok || json.success === false) {
+          throw new Error((json.code || res.status) + ": " + (json.message || "error"));
+        }
+        return json.data !== undefined ? json.data : json;
+      };
+      const getJson = async (path, token) => {
+        const res = await fetch(path, {
+          headers: token ? { Authorization: "Bearer " + token } : {},
+        });
+        const json = await res.json();
+        if (!res.ok || json.success === false) {
+          throw new Error((json.code || res.status) + ": " + (json.message || "error"));
+        }
+        return json.data !== undefined ? json.data : json;
+      };
+
+      // --- 상태 ---
+      let externalUserId = null;
+      let accessToken = null;
+
+      const $ = (id) => document.getElementById(id);
+      const show = (id, obj, cls) => {
+        const el = $(id);
+        el.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+        el.className = cls || "";
+      };
+
+      // --- 1. 회원가입 (RP 자체 엔드포인트) ---
+      $("btnSignup").onclick = async () => {
+        try {
+          const user = await post("/users", { displayName: $("displayName").value });
+          externalUserId = user.externalUserId;
+          show("signupOut", user, "ok");
+          $("btnRegister").disabled = false;
+        } catch (e) {
+          show("signupOut", e.message, "err");
+        }
+      };
+
+      // --- 2. 패스키 등록 (SDK ceremony 엔드포인트) ---
+      $("btnRegister").onclick = async () => {
+        try {
+          const opts = await post("/passkey/register/begin", {
+            externalUserId,
+            displayName: $("displayName").value,
+          });
+          // 서버가 내려준 base64url 옵션을 WebAuthn API 형식으로 디코드
+          const cred = await navigator.credentials.create({
+            publicKey: {
+              challenge: b64uToBuf(opts.challenge),
+              rp: opts.rp,
+              user: {
+                id: b64uToBuf(opts.user.id),
+                name: opts.user.name,
+                displayName: opts.user.displayName,
+              },
+              pubKeyCredParams: opts.pubKeyCredParams,
+              timeout: opts.timeout,
+              attestation: opts.attestation,
+              authenticatorSelection: opts.authenticatorSelection,
+              excludeCredentials: (opts.excludeCredentials || []).map((c) => ({
+                type: c.type,
+                id: b64uToBuf(c.id),
+              })),
+            },
+          });
+          const result = await post("/passkey/register/finish", {
+            ceremonyId: opts.ceremonyId,
+            credentialId: cred.id,
+            clientDataJsonB64u: bufToB64u(cred.response.clientDataJSON),
+            attestationObjectB64u: bufToB64u(cred.response.attestationObject),
+            transports: (cred.response.getTransports?.() || []).join(","),
+            nickname: "내 기기",
+          });
+          show("registerOut", result, "ok");
+        } catch (e) {
+          show("registerOut", e.message, "err");
+        }
+      };
+
+      // --- 3. 패스키 로그인 (SDK ceremony 엔드포인트) ---
+      $("btnLogin").onclick = async () => {
+        try {
+          // externalUserId 생략 시 discoverable 흐름
+          const opts = await post("/passkey/authenticate/begin", { externalUserId });
+          const assertion = await navigator.credentials.get({
+            publicKey: {
+              challenge: b64uToBuf(opts.challenge),
+              timeout: opts.timeout,
+              rpId: opts.rpId,
+              userVerification: opts.userVerification,
+              allowCredentials: (opts.allowCredentials || []).map((c) => ({
+                type: c.type,
+                id: b64uToBuf(c.id),
+              })),
+            },
+          });
+          const result = await post("/passkey/authenticate/finish", {
+            ceremonyId: opts.ceremonyId,
+            credentialId: assertion.id,
+            clientDataJsonB64u: bufToB64u(assertion.response.clientDataJSON),
+            authenticatorDataB64u: bufToB64u(assertion.response.authenticatorData),
+            signatureB64u: bufToB64u(assertion.response.signature),
+            userHandleB64u: assertion.response.userHandle
+              ? bufToB64u(assertion.response.userHandle)
+              : null,
+          });
+          accessToken = result.accessToken;
+          show("loginOut", result, "ok");
+          $("btnMe").disabled = false;
+          $("btnCreds").disabled = false;
+        } catch (e) {
+          show("loginOut", e.message, "err");
+        }
+      };
+
+      // --- 4. 보호된 API ---
+      $("btnMe").onclick = async () => {
+        try {
+          show("apiOut", await getJson("/me", accessToken), "ok");
+        } catch (e) {
+          show("apiOut", e.message, "err");
+        }
+      };
+      $("btnCreds").onclick = async () => {
+        try {
+          show("apiOut", await getJson("/credentials", accessToken), "ok");
+        } catch (e) {
+          show("apiOut", e.message, "err");
+        }
+      };
+    </script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: passkey-rp-demo
+
+passkey:
+  rp:
+    # Passkey platform base URL. Default assumes the server runs locally on 8080.
+    base-url: ${PASSKEY_BASE_URL:http://localhost:8080}
+    # RP API key issued from the platform admin console. Required.
+    api-key: ${PASSKEY_API_KEY:}
+    # Tenant UUID — the JWT filter asserts the access token's tid claim matches this. Required.
+    tenant-id: ${PASSKEY_TENANT_ID:}
+    auth:
+      # Stateless JWT: the SDK filter reads Authorization: Bearer and injects PasskeyPrincipal.
+      mode: jwt
+    # ceremony.path-prefix stays /passkey (default) — the demo page calls those paths directly.
+
+logging:
+  level:
+    com.crosscert.passkey: DEBUG
