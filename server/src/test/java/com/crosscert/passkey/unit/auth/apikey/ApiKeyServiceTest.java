@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.crosscert.passkey.auth.apikey.domain.ApiKey;
+import com.crosscert.passkey.auth.apikey.repository.ApiKeyAdminWriter;
 import com.crosscert.passkey.auth.apikey.repository.ApiKeyRepository;
 import com.crosscert.passkey.auth.apikey.service.ApiKeyProperties;
 import com.crosscert.passkey.auth.apikey.service.ApiKeyService;
@@ -16,6 +17,7 @@ import com.crosscert.passkey.auth.apikey.service.ApiKeyService.ResolvedKey;
 import de.mkammerer.argon2.Argon2;
 import de.mkammerer.argon2.Argon2Factory;
 import java.lang.reflect.Method;
+import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -28,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 
 /**
  * Verifies cache semantics — single-flight on concurrent loads, no negative caching, timing-attack
@@ -44,12 +47,14 @@ class ApiKeyServiceTest {
   private static final ApiKeyProperties CHEAP_PROPS = new ApiKeyProperties(4, 16, 3, 1024, 1, 1);
 
   @Mock private ApiKeyRepository repo;
+  @Mock private ApiKeyAdminWriter adminWriter;
+  @Mock private ObjectProvider<ApiKeyAdminWriter> adminWriterProvider;
   private ApiKeyService service;
   private final Argon2 argon2 = Argon2Factory.create(Argon2Factory.Argon2Types.ARGON2id);
 
   @BeforeEach
   void setUp() throws Exception {
-    service = new ApiKeyService(repo, CHEAP_PROPS);
+    service = new ApiKeyService(repo, CHEAP_PROPS, adminWriterProvider);
     // initDummyHash is package-private (called by @PostConstruct in prod). Invoke reflectively to
     // mirror startup behaviour in this unit test.
     Method init = ApiKeyService.class.getDeclaredMethod("initDummyHash");
@@ -68,13 +73,22 @@ class ApiKeyServiceTest {
   void issue_returns_plaintext_once_and_persists_hash() {
     UUID tenantId = UUID.randomUUID();
     when(repo.findByPrefix(anyString())).thenReturn(Optional.empty());
-    when(repo.save(any(ApiKey.class))).thenAnswer(inv -> inv.getArgument(0));
+    // api_key INSERT is routed through the APP_ADMIN writer, not the JPA repository.
+    when(adminWriterProvider.getIfAvailable()).thenReturn(adminWriter);
 
     IssuedKey issued = service.issue(tenantId, "test-key");
 
     assertThat(issued.plaintext()).startsWith("pk_").contains(".");
     assertThat(issued.id()).isNotNull();
-    verify(repo, times(1)).save(any(ApiKey.class));
+    verify(adminWriter, times(1))
+        .insert(
+            any(UUID.class),
+            any(UUID.class),
+            anyString(),
+            anyString(),
+            anyString(),
+            any(OffsetDateTime.class));
+    verify(repo, times(0)).save(any(ApiKey.class));
   }
 
   @Test

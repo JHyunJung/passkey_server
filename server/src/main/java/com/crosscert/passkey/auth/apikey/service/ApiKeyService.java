@@ -1,6 +1,7 @@
 package com.crosscert.passkey.auth.apikey.service;
 
 import com.crosscert.passkey.auth.apikey.domain.ApiKey;
+import com.crosscert.passkey.auth.apikey.repository.ApiKeyAdminWriter;
 import com.crosscert.passkey.auth.apikey.repository.ApiKeyRepository;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
@@ -11,11 +12,14 @@ import de.mkammerer.argon2.Argon2Factory;
 import jakarta.annotation.PostConstruct;
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,6 +33,9 @@ public class ApiKeyService {
 
   private final ApiKeyRepository repo;
   private final ApiKeyProperties props;
+  // Present only when passkey.admin.enabled=true. Issuance (api_key INSERT) needs the APP_ADMIN
+  // role; an RP-only deployment never reaches issue() so the absence is benign.
+  private final ObjectProvider<ApiKeyAdminWriter> adminWriter;
   private final Argon2 argon2 = Argon2Factory.create(Argon2Factory.Argon2Types.ARGON2id);
 
   /**
@@ -148,14 +155,25 @@ public class ApiKeyService {
               props.argon2MemoryKb(),
               props.argon2Parallelism(),
               secret.toCharArray());
-      ApiKey saved = repo.save(ApiKey.create(tenantId, prefix, secretHash, name));
+      // api_key INSERT is granted only to APP_ADMIN — route it through the admin data source
+      // instead of the APP_RUNTIME JPA path. The id/createdAt are generated here (the JPA
+      // BaseEntity @PrePersist would otherwise own them) so the JDBC insert can be explicit.
+      ApiKeyAdminWriter writer = adminWriter.getIfAvailable();
+      if (writer == null) {
+        throw new BusinessException(
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            "API key issuance requires passkey.admin.enabled=true");
+      }
+      UUID apiKeyId = UUID.randomUUID();
+      OffsetDateTime createdAt = OffsetDateTime.now(ZoneOffset.UTC);
+      writer.insert(apiKeyId, tenantId, prefix, secretHash, name, createdAt);
       log.info(
           "apikey.issued tenantId={} apiKeyId={} prefix={} name={}",
           tenantId,
-          saved.getId(),
+          apiKeyId,
           prefix,
           name);
-      return new IssuedKey(saved.getId(), plaintext, prefix);
+      return new IssuedKey(apiKeyId, plaintext, prefix);
     }
     throw new BusinessException(
         ErrorCode.INTERNAL_SERVER_ERROR, "api key prefix collision after retries");
