@@ -160,8 +160,17 @@ public final class JdkPasskeyHttpClient implements PasskeyHttpClient {
   private <T> T handleResponse(HttpResponse<String> res, TypeReference<T> dataType) {
     int sc = res.statusCode();
     String body = res.body();
+    boolean is2xx = sc >= 200 && sc < 300;
+
+    // A 2xx with an empty body is a valid success — notably HTTP 204 No Content, which the
+    // server returns from DELETE /passkeys/{id}. The HTTP spec forbids a body on 204, so we
+    // must not try to parse an envelope; treat it as a successful no-payload response.
+    if (is2xx && (body == null || body.isBlank())) {
+      return null;
+    }
+
     ApiResponse<Object> envelope = parseEnvelope(body, dataType);
-    if (sc >= 200 && sc < 300 && envelope.success()) {
+    if (is2xx && envelope.success()) {
       if (dataType.getType() == Void.class) return null;
       return (T) envelope.data();
     }

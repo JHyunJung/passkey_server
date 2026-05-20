@@ -169,7 +169,7 @@ class DefaultPasskeyClientWireMockTest {
   }
 
   @Test
-  void delete_credential_emits_204_with_query() {
+  void delete_credential_emits_200_envelope_with_query() {
     UUID id = UUID.randomUUID();
     wm.stubFor(
         delete(urlPathEqualTo("/api/v1/rp/passkeys/" + id))
@@ -180,6 +180,19 @@ class DefaultPasskeyClientWireMockTest {
                     .withHeader("Content-Type", "application/json")
                     .withBody(
                         "{\"success\":true,\"code\":\"OK\",\"message\":\"ok\",\"data\":null,\"traceId\":\"t\"}")));
+
+    client.deleteCredential(id, "alice", null);
+  }
+
+  @Test
+  void delete_credential_handles_204_no_content_empty_body() {
+    // The server's CredentialController.revoke is @ResponseStatus(NO_CONTENT). A real 204 carries
+    // no body — the SDK must treat it as success rather than failing envelope parsing.
+    UUID id = UUID.randomUUID();
+    wm.stubFor(
+        delete(urlPathEqualTo("/api/v1/rp/passkeys/" + id))
+            .withQueryParam("externalUserId", equalTo("alice"))
+            .willReturn(aResponse().withStatus(204)));
 
     client.deleteCredential(id, "alice", null);
   }
