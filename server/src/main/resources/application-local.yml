@@ -40,8 +40,51 @@ passkey:
   cookie:
     secure: false
   jwt:
+    # RS256 so the Java RP SDK (NimbusJwtVerifier — RS256/JWKS only) can verify access tokens via
+    # /.well-known/jwks.json. The HS256 secret stays configured for cutover-compat verification.
+    algorithm: RS256
+    kid: local-dev-rs256
     # Local-only secret. 32+ bytes to satisfy JwtProperties length check. Never reuse in prod.
     secret: local-dev-jwt-secret-must-be-at-least-32-bytes-long
+    rsa-private-pem: |
+      -----BEGIN PRIVATE KEY-----
+      MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDXpvsrYPfCUC0S
+      +9u15YVaBKc0tkIfl8sZwFvrnkzLUNbP3eYDwnJZc9Tvnl0C0URmLL9tlv/N1Tsg
+      L/HL2OVJWhKHF3ngJGTYiPb7eqQWpCaR6kdmVMexj9d10wmUX3Br0o0OFClLYehv
+      i6KxS034ryI65rKoNFVh8WQEgOhr0amr1qghBGZ2bcWE1mu6QMNkKJuG9pXjcob5
+      SfQTlNIqxYM3zRVdUiEH3ztticycvLncVfMZQZ2L2Sk6gKeZU3LnXfttf1dilZe2
+      096IatmZn9YUSbZBNBIEY9EYxnR0YosXUxWJkZa8TmApP3Gv8IVr4kokMRfXbsia
+      +GY8Pj+LAgMBAAECggEAAx27lWXiTqF/9T1EcH1vjtxwWhekHva/jZC1A1OXQnzZ
+      jclkEHvX0SkWU5wTNf42Ic/VuEytR5kkMJPgx5RLw+KUT/Vr4mxENMjN4NZl1pnq
+      oMMk4vqopA0zDNXO1qEGa9hwB1sNObShejMnV66B4u0M7pL00+9lqHOngVUnhp9L
+      Key+W1YRpptsRfG+UPcpdjnDhlgx+jlb9XBuPh64ySlKLGq1ECIXLjK115rYfYv9
+      rPHFYklEBTsKEFVX/RVP9C12J0h9VCqB6cIEPNuW9FMrO/8oAEmLn4l5GYqt8HIU
+      L5asJtF6JZoL22kXeauIcC0fwbcXyoF6d2EAGY+6YQKBgQD5YSJHivUghebueAzI
+      hQSJcz34lxCQe/McQyimy3vqfApMQi3But7qHMubhH23GjP163tbKYX9w61lVjLr
+      tG2B3FlQqKBlyAUfijzYS3ZHpZTl5yq3Bww636Y0E1YzC5/yQtwWlSVTJ/makFph
+      8YRgCKAKpMusj2UrELVZCy5BGwKBgQDdYKBMBQySzNLVmVp2aYyrGnxpDsqhikdo
+      36e9lsWrbl97s7HZfV+qilQ41JYyDvluiO1tesaf6wbrzKzNWZkomRkfWWCJFIa3
+      W+qOhF5Ro3OsjLYcTXixRoFttcBpp3igfS/4VZIehfOZrkO0+m7R72gcqzrXQCAP
+      YvAzslNSUQKBgAsy2HY8ADwAp1koHPLYPlbpzOuf5QeH+WfYgDfVRXBHN7Mq+aEM
+      gjwjJOWL8pVJYPH3LCfw2mqF4gB9+XVqOcyuF3iuyd0oOUqsS4UvBlW7Us9sLRfh
+      AiSWrIEEKUfLitg3NmjxM6bjUasmNljVnqstV/qCYf8SxWlEq9Ae12nnAoGBAIKC
+      MH4gi+UPc0wReE9Osms81hNpcPQC/U5KbC1M8YO7MfdPXI4HZ5q2qihGy7T/NvV/
+      K9nbA7XLbO0eYNE+/Rf+Cd19Z3fo7fKy8XjLeH9QiSU0XzgYRAresfbnq2OeI3MZ
+      2mngqJ/uAEqdfbT33tVM+mfMWogDeeMYRNt1ScHBAoGBAKvnlblLIv0GyLrUm8u9
+      Pm50rVloALYO0ZwVU/kiAx7Sp3vKDUiCVJfbRVXhy5BcD2ZGihZUge6OpvOweDzR
+      TnUau9amAw3yqibh11g8gpH+hOX7HV6w9C2nIX/9zO8LJV9mMrcpgxYNGyPfF+Wo
+      xzsxGBznU4DyHnvzXjI7q8uR
+      -----END PRIVATE KEY-----
+    rsa-public-pem: |
+      -----BEGIN PUBLIC KEY-----
+      MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA16b7K2D3wlAtEvvbteWF
+      WgSnNLZCH5fLGcBb655My1DWz93mA8JyWXPU755dAtFEZiy/bZb/zdU7IC/xy9jl
+      SVoShxd54CRk2Ij2+3qkFqQmkepHZlTHsY/XddMJlF9wa9KNDhQpS2Hob4uisUtN
+      +K8iOuayqDRVYfFkBIDoa9Gpq9aoIQRmdm3FhNZrukDDZCibhvaV43KG+Un0E5TS
+      KsWDN80VXVIhB987bYnMnLy53FXzGUGdi9kpOoCnmVNy5137bX9XYpWXttPeiGrZ
+      mZ/WFEm2QTQSBGPRGMZ0dGKLF1MViZGWvE5gKT9xr/CFa+JKJDEX127ImvhmPD4/
+      iwIDAQAB
+      -----END PUBLIC KEY-----
   actuator:
     username: actuator
     password: change-me-local-actuator
