@@ -3,6 +3,7 @@ package com.crosscert.passkey.slice.admin;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -16,6 +17,8 @@ import com.crosscert.passkey.admin.security.AdminPrincipal;
 import com.crosscert.passkey.audit.service.AuditAggregationService;
 import com.crosscert.passkey.common.exception.GlobalExceptionHandler;
 import com.crosscert.passkey.common.filter.TraceIdFilter;
+import com.crosscert.passkey.credential.domain.Credential;
+import com.crosscert.passkey.credential.domain.CredentialStatus;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
@@ -110,6 +113,42 @@ class AdminEndUserControllerSliceTest {
         .andExpect(jsonPath("$.success").value(true))
         .andExpect(jsonPath("$.data.externalId").value("ext-9"))
         .andExpect(jsonPath("$.data.credentials").isArray())
+        .andExpect(jsonPath("$.data.lastActivityAt").exists());
+  }
+
+  @Test
+  void detail_last_activity_includes_credential_last_used() throws Exception {
+    UUID tenantId = UUID.randomUUID();
+    UUID tenantUserId = UUID.randomUUID();
+    loginAs(AdminRole.PLATFORM_OPERATOR, null);
+
+    TenantUser user = TenantUser.create(tenantId, "ext-login", "Dave");
+    when(tenantUserRepo.findById(tenantUserId)).thenReturn(Optional.of(user));
+
+    // CREDENTIAL_AUTHENTICATED audit rows are keyed by credential id, not the tenant-user id,
+    // so the only last-activity signal here is the credential's lastUsedAt.
+    OffsetDateTime credentialLastUsed = OffsetDateTime.now(ZoneOffset.UTC);
+    Credential credential = mock(Credential.class);
+    when(credential.getId()).thenReturn(UUID.randomUUID());
+    when(credential.getTenantUserId()).thenReturn(tenantUserId);
+    when(credential.getCredentialId()).thenReturn("cred-login");
+    when(credential.getNickname()).thenReturn("Dave's passkey");
+    when(credential.getStatus()).thenReturn(CredentialStatus.ACTIVE);
+    when(credential.getAaguid()).thenReturn(null);
+    when(credential.getTransports()).thenReturn(null);
+    when(credential.getSignatureCounter()).thenReturn(0L);
+    when(credential.getLastUsedAt()).thenReturn(credentialLastUsed);
+    when(credential.getCreatedAt()).thenReturn(credentialLastUsed);
+    when(credential.getRevokedAt()).thenReturn(null);
+    when(credential.getRevokedReason()).thenReturn(null);
+    when(credentialRepo.findAllByTenantUserId(tenantUserId)).thenReturn(List.of(credential));
+
+    when(auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()))
+        .thenReturn(Optional.empty());
+
+    mvc.perform(get("/api/v1/admin/tenants/{tenantId}/users/{userId}", tenantId, tenantUserId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.success").value(true))
         .andExpect(jsonPath("$.data.lastActivityAt").exists());
   }
 

@@ -116,8 +116,18 @@ public class AdminEndUserController {
             .toList();
     long activeCount =
         credentials.stream().filter(c -> CredentialStatus.ACTIVE.name().equals(c.status())).count();
-    OffsetDateTime lastActivity =
+    // The most common successful event — CREDENTIAL_AUTHENTICATED — is audited with
+    // subject_id = credential id, not the tenant-user id, so lastEventForSubject misses it.
+    // Fold in the max credential lastUsedAt (credentials are already loaded — no extra query).
+    OffsetDateTime auditLast =
         auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()).orElse(null);
+    OffsetDateTime credentialLast =
+        credentials.stream()
+            .map(CredentialView::lastUsedAt)
+            .filter(java.util.Objects::nonNull)
+            .max(java.util.Comparator.naturalOrder())
+            .orElse(null);
+    OffsetDateTime lastActivity = maxNullable(auditLast, credentialLast);
     return ApiResponse.ok(
         new EndUserDetailView(
             user.getId(),
@@ -128,5 +138,16 @@ public class AdminEndUserController {
             activeCount,
             lastActivity,
             credentials));
+  }
+
+  /** Returns the later of two timestamps, treating null as "no value". */
+  private static OffsetDateTime maxNullable(OffsetDateTime a, OffsetDateTime b) {
+    if (a == null) {
+      return b;
+    }
+    if (b == null) {
+      return a;
+    }
+    return a.isAfter(b) ? a : b;
   }
 }
