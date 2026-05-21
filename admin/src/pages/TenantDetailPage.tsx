@@ -10,6 +10,7 @@ const TABS = [
   { to: "webauthn-config", label: "WebAuthn" },
   { to: "attestation-policy", label: "AAGUID 정책" },
   { to: "api-keys", label: "API Keys" },
+  { to: "users", label: "Users" },
   { to: "credentials", label: "Credentials" },
   { to: "audit-logs", label: "Audit Logs" },
   { to: "funnel", label: "Funnel" },
