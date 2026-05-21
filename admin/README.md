@@ -6,7 +6,7 @@ Crosscert Passkey 멀티테넌트 어드민 SPA. Vite + React + TypeScript + Tai
 
 ## 빠른 시작 (local dev)
 
-1. 사전: 백엔드(`../server`)가 `http://localhost:8080`에서 동작 (Postgres+Redis는 `../server`의 `docker compose up -d`).
+1. 사전: 백엔드(`../server`)가 `http://localhost:8080`에서 동작 (Oracle 19c-compatible + Redis는 `../server`의 `docker compose up -d`). 콘솔 연동을 위해 백엔드는 `--passkey.admin.enabled=true`로 기동해야 합니다.
 2. 의존성 설치:
    ```
    npm install
@@ -45,7 +45,9 @@ src/
 ├── lib/        api, cn, guard, format
 ├── hooks/      useMe, useLogout, useToast
 ├── layout/     AppLayout, Sidebar, Header, Breadcrumb
-├── pages/      Login, TenantsList, TenantDetail (+ tenant/* tabs)
+├── pages/      Login, TenantsList, TenantDetail, AdminUsers, System
+│   └── tenant/ Overview · WebauthnConfig · AttestationPolicy · ApiKeys
+│               · Credentials · Audit · Funnel · Users(+UserDetail) 탭
 ├── components/ ui/ (shadcn) + 도메인 컴포넌트
 └── types/      서버 DTO 매핑
 ```

@@ -9,21 +9,23 @@ Crosscert Passkey Server의 내부 구조 문서. **누가** 어떤 데이터를
 ## 1. 시스템 개요
 
 ```
-                           ┌──────────────────────────┐
-   브라우저(RP 프론트)  ──→ │ RP 백엔드 (API key 보유)  │ ──→  Passkey Server
-                           └──────────────────────────┘            │
-                                                                    ▼
-   카드사 IAM 담당      ──→  Passkey Admin Console SPA  ──→  Passkey Server
-   (RP_ADMIN)                  (v1.1, REST는 완비)              │
-                                                                ▼
-   Crosscert 운영자     ──→  동일 콘솔, 권한만 다름      ──→  Oracle 19c + Redis
+                           ┌──────────────────────────────────────┐
+   브라우저(RP 프론트)  ──→ │ RP 백엔드 (API key 보유)               │ ──→  Passkey Server
+                           │  · 직접 통합: JS SDK + REST 호출         │            │
+                           │  · Java RP SDK starter (ceremony 프록시) │            │
+                           └──────────────────────────────────────┘            ▼
+   카드사 IAM 담당      ──→  Passkey Admin Console SPA  ──────────→  Passkey Server
+   (RP_ADMIN)                  (`admin/`, 구현 완료)                      │
+                                                                          ▼
+   Crosscert 운영자     ──→  동일 콘솔, 권한만 다름      ──────────→  Oracle 19c + Redis
    (PLATFORM_OPERATOR)
 ```
 
 - **단일 Spring Boot 인스턴스**(stateless, 수평 확장 가능)
-- **Oracle 19c** — 모든 영속 데이터. **Virtual Private Database(VPD)**로 테넌트 격리. (v1.5에서 PostgreSQL → Oracle 19c 이식. `docs/migration-postgres-to-oracle.md` 참조)
+- **Oracle 19c** — 모든 영속 데이터. **Virtual Private Database(VPD)**로 테넌트 격리. (v1.5에서 PostgreSQL → Oracle 19c 이식 — §11 변경 이력 2026-05-18 항목 참조. 구 PG migration history는 `server/src/main/resources/db/archive_postgres/`에 보존)
 - **Redis** — WebAuthn challenge 임시 저장(TTL 5분), rate-limit 카운터(Lua atomic INCR+EXPIRE), Spring Session, API key revocation pub/sub.
 - **외부 통신** — FIDO MDS3 BLOB (strict tenant 활성 시, 1일 1회 refresh). 그 외 없음.
+- **RP 통합 경로 2종** — ① 브라우저 `@crosscert/passkey-sdk` + RP 백엔드가 REST 직접 호출, ② RP 백엔드가 `passkey-rp-spring-boot-starter` 적용 (ceremony 프록시 + JWKS 기반 JWT 검증). §11 변경 이력 2026-05-20 참조.
 
 ---
 
@@ -79,7 +81,7 @@ com.crosscert.passkey
 │                                    adminLogin perMinute), RateLimiter (Redis Lua INCR+EXPIRE
 │                                    atomic), RateLimitFilter (PathClass enum 1회 분류)
 ├── audit                            — M3 audit log + 무결성 검증
-│   ├── domain                       AuditEntry (composite PK, partitioned), AuditEventType, ActorType
+│   ├── domain                       AuditEntry (composite PK (id, created_at)), AuditEventType, ActorType
 │   ├── repository                   AuditEntryRepository (findLatestForTenant,
 │   │                                streamForTenantByTime — fetchSize=1000 hint)
 │   └── service                      AuditService (per-tenant SHA-256 hash chain;
@@ -108,7 +110,7 @@ com.crosscert.passkey
     │   ├── TenantScopedEntity        BaseEntity + tenant_id (@PrePersist 자동 주입)
     │   ├── JpaConfig                 placeholder
     │   └── multitenancy
-    │       ├── TenantConnectionProvider          매 트랜잭션에 SET LOCAL app.current_tenant
+    │       ├── TenantConnectionProvider          매 트랜잭션에 passkey_ctx_pkg.set_tenant 호출
     │       ├── CurrentTenantIdentifierResolverImpl  ThreadLocal → tenantId 문자열
     │       └── HibernateMultiTenancyConfig       Hibernate property 주입
     ├── datasource
@@ -156,7 +158,7 @@ com.crosscert.passkey
        ├──→ N  api_key                ── RLS 비대상 (prefix lookup)
        │      (prefix UQ, Argon2 hash)
        │
-       ├──→ N  audit_log              ── partitioned by month, hash chain per tenant
+       ├──→ N  audit_log              ── 단일 테이블, hash chain per tenant
        │      (event_type, payload jsonb, prev_hash → row_hash)
        │
        └──→ 0..N  admin_user          ── RLS 비대상 (로그인은 컨텍스트 set 전)
@@ -276,9 +278,9 @@ RP가 자기 서비스에서 platform API 호출할 때 쓰는 키.
 
 발급 시 plaintext 형식: `pk_<prefix>.<secret>`. **plaintext는 발급 직후 한 번만 응답**, 이후 보존되지 않음.
 
-#### `audit_log` (`audit.domain.AuditEntry`) — partitioned + hash chain
+#### `audit_log` (`audit.domain.AuditEntry`) — 단일 테이블 + hash chain
 
-month-partitioned. composite PK `(id, created_at)` — Postgres partitioning 요구사항.
+단일 테이블(EE 환경에서 Interval Partitioning을 후속 마이그레이션으로 부착 가능). composite PK `(id, created_at)` — partitioning 시 partition key 포함 요구사항 대비.
 
 | 컬럼 | 의미 |
 |------|------|
@@ -292,7 +294,7 @@ month-partitioned. composite PK `(id, created_at)` — Postgres partitioning 요
 | `payload` | jsonb |
 | `prev_hash` | text — 이 tenant의 직전 row의 row_hash |
 | `row_hash` | text — `SHA256(prev_hash \| tenantId \| eventType \| canonical(payload))` 의 base64url |
-| `created_at` | partition key |
+| `created_at` | composite PK 구성 컬럼 — 후속 Interval Partitioning 시 partition key로 사용 |
 
 **hash chain은 per-tenant**. 글로벌 단일 chain은 다중 서버 환경에서 single-writer 병목.
 
@@ -319,24 +321,24 @@ CHECK ((role='PLATFORM_OPERATOR' AND tenant_id IS NULL)
 
 ## 4. 마이그레이션 흐름 (Flyway)
 
-```
-V1__baseline                  역할 3-tier, schema, pgcrypto extension,
-                              passkey.current_tenant_id() 헬퍼 함수
-V2__create_tenant             tenant, tenant_user (RLS enable+force)
-V3__create_webauthn_config    RP ID/origin 설정
-V4__create_credential         자격증명 본체
-V5__create_attestation_policy AAGUID allowlist
-V6__create_api_key            RP API key (RLS 비대상)
-V7__create_audit_log          parent + 2026-05/06 초기 파티션
-V8__create_admin_user         admin 사용자
-V9__audit_funnel_index        AdminFunnelController용 partial index
-                              (tenant_id, event_type, created_at)
-                              WHERE event_type IN (CREDENTIAL_REGISTERED, CREDENTIAL_AUTHENTICATED)
+v1.5 Oracle 이식 시 구 PostgreSQL의 다중 V 파일(V1~V18)을 **단일 baseline으로 통합**했다. 구 history는 `server/src/main/resources/db/archive_postgres/`에 보존.
 
-R__rls_policies               모든 정책의 desired state (re-applied on file hash change)
+```
+V1__oracle_baseline           DB user 3-tier(APP_MIGRATOR/APP_RUNTIME/APP_ADMIN),
+                              PASSKEY_CTX secure application context,
+                              passkey_ctx_pkg(set_tenant/clear_tenant) 패키지,
+                              passkey_tenant_predicate 정책 함수,
+                              전체 테이블·인덱스 DDL (tenant, tenant_user,
+                              tenant_webauthn_config, credential,
+                              tenant_attestation_policy, api_key, audit_log,
+                              admin_user, refresh_token, scheduler_lease 등),
+                              DML grant, audit funnel 인덱스
+
+R__vpd_policies               7개 tenant-scoped 테이블에 DBMS_RLS.ADD_POLICY 부착.
+                              테이블 배열이 desired state — 파일 hash 변경 시 재적용.
 ```
 
-운영 주의: `audit_log`의 미래 월 파티션은 운영 cron이 미리 생성해야 함. V7 헤더 코멘트 참조.
+새 tenant-scoped 테이블 추가 절차는 `server/docs/migrations.md` "VPD conventions" 참조. `audit_log`는 단일 테이블이며, EE 환경에서는 Interval Partitioning을 후속 마이그레이션으로 부착할 수 있다.
 
 ---
 
@@ -393,10 +395,10 @@ JPA Repository
   │
   ▼
 Hibernate MultiTenantConnectionProvider.getConnection(tenantId)
-    - SELECT set_config('app.current_tenant', ?, true)  ← SET LOCAL은 COMMIT/ROLLBACK 시 자동 소멸
+    - CALL passkey_ctx_pkg.set_tenant(?)  ← VPD secure context 설정. connection 반납 시 clear_tenant로 명시 해제
   │
   ▼
-SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
+SQL 실행 — VPD predicate (tenant_id = HEXTORAW(SYS_CONTEXT('PASSKEY_CTX','TENANT_ID')))
 ```
 
 ### 5.2 RP 등록 ceremony (passkey 등록)
@@ -488,7 +490,8 @@ SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
      │       → AuditService.append(SIGNATURE_COUNTER_REGRESSION)
      │       → metrics.signatureCounterRegression.increment()
      ├─ TokenService.issue(tenantId, tenantUserId, externalUserId)
-     │     → JWT access (15분) + refresh (30일), HS256
+     │     → JWT access (15분) + refresh (30일). 서명 알고리즘은 passkey.jwt.algorithm
+     │       (HS256 default / RS256). RS256 시 공개키는 /.well-known/jwks.json 노출
      ├─ AuditService.appendAfterCommit(CREDENTIAL_AUTHENTICATED)
      │     → afterCommit 비동기; counter regression 등 실패는 동기 append 유지
      └─ metrics.authenticationSuccess.increment()
@@ -526,7 +529,7 @@ SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
      │
   ▼  AdminTenantController.list()
      ├─ AdminAuthz.requirePlatformOperator() — role 검증
-     └─ AdminTenantService.listAll() → adminDataSource 사용 가능 (BYPASSRLS)
+     └─ AdminTenantService.listAll() → adminDataSource 사용 가능 (APP_ADMIN — EXEMPT ACCESS POLICY)
   │
   ▼  ③ POST /api/v1/admin/tenants/{tenantId}/api-keys
   │
@@ -562,19 +565,19 @@ SQL 실행 — RLS USING (tenant_id = passkey.current_tenant_id())
 
 코드가 진화해도 깨지면 안 되는 불변식 (다수가 ArchUnit/integration test로 자동 검증):
 
-1. **모든 DB 접근은 `@Transactional` 안에서만**. 이유: Hibernate `getConnection(tenantId)`은 트랜잭션 진입 시점에 한 번 호출되어 `SET LOCAL`을 발급. 트랜잭션 밖이면 RLS 미적용.
-2. **모든 테넌트 스코프 테이블은 `ENABLE + FORCE ROW LEVEL SECURITY`**. `FORCE`가 빠지면 owner 권한일 때 정책이 무시됨.
-3. **`app_runtime` 역할은 `NOBYPASSRLS NOSUPERUSER`**. 운영에서 RLS 강제.
-4. **tenant 컨텍스트 미설정 → SELECT 0 rows (fail-closed)**. `passkey.current_tenant_id()`가 `NULLIF`로 빈 문자열을 NULL로 변환.
+1. **모든 DB 접근은 `@Transactional` 안에서만**. 이유: Hibernate `getConnection(tenantId)`은 트랜잭션 진입 시점에 한 번 호출되어 `passkey_ctx_pkg.set_tenant`로 VPD 컨텍스트를 설정. 트랜잭션 밖이면 컨텍스트 미설정 → VPD fail-closed.
+2. **모든 테넌트 스코프 테이블은 `DBMS_RLS.ADD_POLICY`로 VPD 정책 부착**. `R__vpd_policies.sql`의 테이블 배열이 desired-state.
+3. **`APP_RUNTIME`은 `EXEMPT ACCESS POLICY` 미부여**. 운영 트래픽에 VPD 강제. `APP_ADMIN`만 부여(Platform Operator cross-tenant).
+4. **tenant 컨텍스트 미설정 → SELECT 0 rows (fail-closed)**. 정책 함수 `passkey_tenant_predicate`가 컨텍스트 부재 시 `'1 = 0'` predicate 반환.
 5. **RP API 인증의 정석은 `ApiKeyAuthenticationFilter` (Spring Security)**. `ApiKeyTenantResolver`는 local/test/dev에서만 보조. prod의 미인증 요청은 401(A005)로 항상 막힘.
-6. **Hibernate `getConnection(tenantId)`에서 `SET LOCAL` 단일 지점**. 다른 곳에서 `SET LOCAL`을 발급하지 말 것.
+6. **Hibernate `getConnection(tenantId)`에서 `set_tenant` 단일 지점**, connection 반납 시 `clear_tenant`. 다른 곳에서 VPD 컨텍스트를 직접 조작하지 말 것 — Oracle 컨텍스트는 per-session이라 누수 위험.
 7. **`ApiResponse` envelope 모든 응답에 적용**. controller는 직접 `ResponseEntity` 반환 금지 (`/api/v1/admin/auth/login` 같은 Spring Security 자체 응답만 예외).
-8. **RLS 정책은 `R__rls_policies.sql`로 desired-state 관리**. 새 테이블 추가 시 같은 PR에서 R__ 갱신.
+8. **VPD 정책은 `R__vpd_policies.sql`로 desired-state 관리**. 새 테이블 추가 시 같은 PR에서 R__ 배열 + `RlsPolicyCatalogTest.EXPECTED_TABLES` 갱신.
 9. **URL prefix `/api/v1/rp/`, `/api/v1/admin/`, `/_diag/` 세 그룹만 허용** — ArchUnit 강제.
 10. **`ErrorCode`는 단일 enum + 도메인 prefix(C/A/T/P/R/D/M) + 3자리 번호**. 추가 시 prefix 규약 유지.
 11. **`Credential.updateSignatureCounter`만이 signature counter 변경 진입점**. 단조 증가 검사를 우회하지 말 것. 단위 테스트 `CredentialSignatureCounterTest`가 4개 시나리오로 강제.
 12. **API key의 plaintext는 DB에 절대 저장 안 됨**. Argon2id hash만 보관. `ApiKeyService.verify`는 `DUMMY_HASH`로 항상 같은 시간 소비 (timing attack 방어). 캐시는 Caffeine `LoadingCache` single-flight — 동일 키 동시 요청에서도 Argon2 verify 1회만 실행.
-13. **audit hash chain은 per-tenant + `pg_advisory_xact_lock`으로 직렬화**. 같은 tenant의 concurrent ceremony가 chain fork를 일으키지 않음. 무결성 검증은 `AuditService.verifyIntegrity(tenantId, from, to)` + 일별 `AuditChainScheduler`(03:30 UTC)가 자동 실행 → 위변조 발견 시 `audit.chain.tampered{tenantId}` Micrometer counter + ERROR 로그.
+13. **audit hash chain은 per-tenant + `DBMS_LOCK`(ALLOCATE_UNIQUE + REQUEST X_MODE, release_on_commit)으로 직렬화**. 같은 tenant의 concurrent ceremony가 chain fork를 일으키지 않음 (구 PG `pg_advisory_xact_lock`의 Oracle 등가물). 무결성 검증은 `AuditService.verifyIntegrity(tenantId, from, to)` + 일별 `AuditChainScheduler`(03:30 UTC)가 자동 실행 → 위변조 발견 시 `audit.chain.tampered{tenantId}` Micrometer counter + ERROR 로그.
 14. **JWT 검증은 `verifyAccess` / `verifyRefresh` 둘 중 하나로 명시 호출**. `typ` claim이 안 맞으면 INVALID_TOKEN — refresh 토큰을 access처럼 쓰는 혼동 차단. JWT secret은 `JwtProperties`가 부팅 시 ≥32 bytes를 강제 (fail-fast).
 15. **API key 캐시 evict는 `ApiKeyRevocationPublisher.publish`** 거쳐 Redis pub/sub로 모든 인스턴스 동기화.
 16. **Ceremony 성공 audit는 `appendAfterCommit`(afterCommit + `@Async("auditExecutor")`), 실패/규제 audit는 동기 `append`**. 비동기 append 실패는 ERROR 로그로 남으며 일별 scheduler가 chain gap을 발견하면 reconcile 대상이 됨.
@@ -596,14 +599,15 @@ Spring Boot 3.5.0
   └ Actuator (health, prometheus)
 
 webauthn4j 0.27.0.RELEASE                ceremony 검증 코어 (+ webauthn4j-metadata: MDS3)
-JJWT 0.12.6                              JWT 발급/검증 (verifyAccess/verifyRefresh typ enforcement)
+JJWT 0.12.6                              JWT HS256 발급/검증 (legacy verify path)
+nimbus-jose-jwt 9.40                     JWT RS256 서명 (kid 헤더) + JWKS
 Argon2 (de.mkammerer:argon2-jvm 2.11)    API key 시크릿 해시 (ApiKeyProperties로 파라미터 외부화)
 Caffeine                                 ApiKeyService LoadingCache (single-flight, 5분 TTL)
-Flyway 11.x (postgresql variant)         스키마 마이그레이션
+Flyway core + flyway-database-oracle     스키마 마이그레이션 (Oracle variant)
 springdoc-openapi 2.8.9                  OpenAPI/Swagger UI 자동 생성 (prod disabled by default)
 Lombok                                   @Getter, @RequiredArgsConstructor, @Slf4j
 
-PostgreSQL JDBC                          runtime
+Oracle JDBC (ojdbc11 23.3)               runtime
 Testcontainers 1.20.4                    통합 테스트 (현재 사용 안함, docker-compose로 대체)
 ArchUnit 1.3.0                           패키지 경계 검증
 
@@ -795,3 +799,5 @@ strict on이지만 서버 `passkey.mds.enabled=false`면 해당 tenant의 regist
 | 2026-05-18 | Observability Wave 2 | 신규 메트릭: `passkey.backup_state.flips{direction=synced}` (compliance dashboard), `passkey.security.ownership_mismatch` (IDOR 알람), `passkey.security.refresh_tid_mismatch` (cross-tenant exfil), `passkey.security.refresh_reuse_detected` (token reuse). 신규 운영 이벤트: `auth.backup_state.synced` (WARN) / `.unsynced` (INFO), `credential.ownership.mismatch` (WARN), `credential.revoke.rp` (INFO — admin path와 구분), `token.refresh.tid_mismatch` (WARN, clientIp/UA 포함), `token.refresh.reuse_detected` (ERROR, clientIp/UA 포함). 신규 인프라: `AccessLogFilter` (per-request INFO/WARN/ERROR — method, path, status, durationMs, MDC 컨텍스트), `BootSanityLogger` (`ApplicationReadyEvent` 시 profile/MDS/Argon2/rate-limit/cookie/JWT 단일 INFO 라인 + 위험 조합 WARN), `ApiKeyAuthenticationFilter` 인증 실패 경로별 WARN(`apikey.auth.reject reason=verify_failed|tenant_inactive`)으로 분리, `TokenService.parseSigned` 실패/타입혼동 WARN, `ChallengeStore.consume.miss` DEBUG→INFO 승격, register/auth `challenge.wrong_type` WARN. `logback-spring.xml` prod profile — WARN+ sync `CONSOLE_JSON_WARN_SYNC`로 분리해 async queue overflow 시에도 보안 이벤트 무유실. |
 | 2026-05-21 | Audit self-invocation 수정 + Cross-tenant 통계 | **Audit 버그**: `AuditService.appendAfterCommit`이 `afterCommit` 콜백에서 `appendAsync`를 self-invocation으로 호출 → Spring AOP 프록시 우회로 `@Async`·`@Transactional(REQUIRES_NEW)` 무력화 → ceremony 완료 audit(`CREDENTIAL_REGISTERED`/`CREDENTIAL_AUTHENTICATED`)가 트랜잭션 없이 실행되어 VPD fail-closed로 유실, admin 대시보드 ceremony 성공률 0% 표시. 수정: `appendAsync`를 별도 빈 `AsyncAuditWriter`로 분리 (프록시 경계 통과 → `@Async` 정상 작동, 위임된 `auditService.append()`도 cross-bean이라 `REQUIRES_NEW` 복원), `AuditService ↔ AsyncAuditWriter` 생성자 순환은 `@Lazy`로 차단. 회귀 테스트 `AsyncAuditWriterSliceTest`(audit-* executor 스레드 검증). **Cross-tenant 통계**: `/tenants` 페이지 MetricCard 3종(등록 Credential / 유효 API Key / 24h ceremony)을 전체 테넌트 합산 실데이터로 연동. `GET /api/v1/admin/platform/stats` 신규 — `AdminPlatformStatsController` + `AdminPlatformStatsService` (둘 다 `@ConditionalOnProperty(passkey.admin.enabled=true)`), `APP_ADMIN` 데이터소스 + native COUNT 3건으로 VPD 우회 cross-tenant 집계 (`ApiKeyAdminWriter` 패턴 재사용, `@Transactional("adminTransactionManager")`). PLATFORM_OPERATOR 전용 (`requirePlatformOperator()`). 프론트: `TenantsListPage` `useQuery`(staleTime 60s), `lib/format`에 `formatCount`/`formatMaybeCount` 공통 추출. 테스트: `AdminPlatformStatsControllerSliceTest`(권한·응답 계약), `AdminPlatformStatsIntegrationTest`(2 테넌트 합산·ACTIVE 필터·24h 윈도우 — `AdminEnabledIntegrationTestBase`가 `@DynamicPropertySource`로 `passkey.admin.enabled=true` + `APP_ADMIN` 데이터소스 등록, 공유 `test` 프로파일 미오염), `AdminDataSourceConditionTest`에 빈 부재 가드 추가. |
 | 2026-05-22 | Admin End-user 조회 | Admin 콘솔 tenant 상세에 "Users" 탭 추가 — end-user(`tenant_user`) 목록·검색·상세를 조회 전용으로 제공. 신규 `AdminEndUserController` (`GET /api/v1/admin/tenants/{tenantId}/users` 목록, `.../users/{tenantUserId}` 상세) — `AdminUserSessionController`의 logout-all과 같은 base path를 HTTP 메서드 차이로 공존. `TenantUserRepository.findByTenantIdWithSearch` — `EndUserRow` projection + `Credential` LEFT JOIN 집계로 활성 passkey 개수를 N+1 없이 계산(GROUP BY라 `countQuery` 명시), externalId·displayName case-insensitive 검색. `AuditAggregationService.lastEventForSubject`로 상세의 최근 활동 시각. 프론트: `UsersTab`(검색·페이징 목록), `UserDetailPage`(별도 라우트 `users/:tenantUserId` 상세 — 메타 카드 + passkey 테이블). 권한 `requireTenantAccess` — PLATFORM_OPERATOR + 자기 tenant RP_ADMIN. 테스트: `AdminEndUserControllerSliceTest`(6 케이스 — 목록·검색 전달·상세·cross-tenant 거부·404·RP_ADMIN 거부), `AdminEndUserIntegrationTest`(2 테넌트 시딩 — 활성 passkey 집계·검색·격리·countQuery 정합성). |
+| 2026-05-20 | RP Java SDK (`sdk-java/` 신규) | RP **백엔드**용 Java SDK 신설 — `passkey-rp-sdk-core`(transport·DTO·`NimbusJwtVerifier`), `passkey-rp-spring-boot-starter`(ceremony 프록시 컨트롤러 + `PasskeyJwtAuthenticationFilter` + auto-config), `passkey-rp-sdk-bom`. RP는 starter 의존성만 추가하면 `/passkey/{register,authenticate}/{begin,finish}` ceremony 엔드포인트와 JWT 인증 필터를 거의 무코드로 확보. `examples/passkey-rp-demo`는 in-memory user store 기반 참조 RP 서버. **JWT 검증은 RS256 + JWKS 전용** — `NimbusJwtVerifier`가 `<base-url>/.well-known/jwks.json`에서 공개키를 가져와 로컬 검증(secret 공유 불필요). 문서: `docs/rp-java-sdk.md`. |
+| 2026-05-22 | RS256 JWT 운영 모드 | `passkey.jwt.algorithm`을 `RS256`으로 전환 가능 — RP Java SDK(`NimbusJwtVerifier`)가 RS256/JWKS 전용이므로 RP SDK 통합이 있으면 서버는 RS256 운영 필수. `TokenService`는 cutover 호환을 위해 HS256·RS256 양쪽 검증을 모두 수용, `JwksController`가 `/.well-known/jwks.json`으로 RS256 공개키 노출. local 프로파일(`application-local.yml`)을 RS256 + 데모 RSA 키페어로 기동하도록 변경. 운영 환경변수 `PASSKEY_JWT_ALGORITHM` / `PASSKEY_JWT_RSA_{PRIVATE,PUBLIC}_PEM` / `PASSKEY_JWT_KID`(+ `_PREVIOUS` 회전용) — `docs/deployment.md` "JWT 서명 알고리즘" 참조. |

@@ -116,6 +116,8 @@ X-API-Key: ...
 성공 시 `accessToken` (JWT) + `refreshToken` 반환.
 
 > **토큰 의미 (중요)**: `accessToken`은 **stateless** 입니다 — Passkey 서버는 발급 후 그것을 다시 검증하지 않습니다. RP 백엔드가 자체 세션 토큰으로 사용하거나 자기 토큰으로 교환하는 용도. 반면 `refreshToken`은 **stateful** — 서버 DB에 행이 있고, `POST /api/v1/rp/auth/refresh` 로 rotate 시 reuse 감지 + family burn 동작이 작동합니다.
+>
+> **JWT 검증**: `accessToken`은 `passkey.jwt.algorithm` 설정에 따라 HS256(대칭) 또는 RS256(비대칭)으로 서명됩니다. RP 백엔드가 토큰을 직접 검증하려면 — HS256은 서버와 secret을 공유해야 하고, RS256은 `/.well-known/jwks.json`의 공개키로 secret 공유 없이 검증할 수 있습니다. **RP Java SDK([rp-java-sdk.md](./rp-java-sdk.md))는 RS256 + JWKS 전용**이므로, SDK를 쓰려면 서버가 RS256으로 운영돼야 합니다.
 
 ### 2.1 Credential 관리 API (`/api/v1/rp/passkeys`)
 
@@ -171,6 +173,7 @@ await client.revokeCredential("8a3f...c1d2", "user-12345");
 
 ## 4. 다음 단계
 
+- RP 백엔드를 Java/Spring Boot로 구현한다면: [rp-java-sdk.md](./rp-java-sdk.md) — ceremony 프록시 + JWT 검증을 starter로 거의 무코드 처리
 - 에러 코드 카탈로그: [error-codes.md](./error-codes.md)
 - API 전체 reference: 서버에 부팅 후 `/swagger-ui/index.html` (OpenAPI 자동 생성)
 - 배포 가이드: [deployment.md](./deployment.md)

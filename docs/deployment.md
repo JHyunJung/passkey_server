@@ -17,14 +17,12 @@
 └──────┬───────┘    └──────┬───────┘
        │                   │
        ▼                   ▼
-   ┌───────────────────────────┐
-   │ PgBouncer (transaction)   │   ← M5+ 권장. SET LOCAL 호환 검증 필요.
-   └────────────┬──────────────┘
-                ▼
    ┌─────────────────┐  ┌────────────────┐
    │ Oracle 19c       │  │ Oracle reader  │
    │ (Data Guard)     │  │  (optional)    │
    └──────────────────┘  └────────────────┘
+   ※ connection pool은 앱 내 HikariCP. 추가 풀링이 필요하면 Oracle DRCP 검토
+     — VPD 컨텍스트는 per-session이라 connection 반납 시 clear_tenant로 해제됨.
 
    ┌─────────────────┐
    │ Redis Sentinel  │   ← challenge + rate-limit. SPOF 회피 필수.
@@ -56,7 +54,13 @@ PG의 `BYPASSRLS` 역할 속성은 Oracle에서는 `EXEMPT ACCESS POLICY` 시스
 | `SPRING_DATA_REDIS_HOST` | yes | |
 | `SPRING_DATA_REDIS_PORT` | no | default 6379 |
 | `SPRING_DATA_REDIS_PASSWORD` | recommended | |
-| `PASSKEY_JWT_SECRET` | yes | **최소 32바이트**. fail-fast로 검증됨. |
+| `PASSKEY_JWT_ALGORITHM` | no | `HS256`(default) 또는 `RS256`. 선택 기준은 아래 "JWT 서명 알고리즘" 참조. |
+| `PASSKEY_JWT_SECRET` | algorithm=HS256일 때 yes | **최소 32바이트**. fail-fast로 검증됨. RS256에서는 미사용. |
+| `PASSKEY_JWT_SECRET_PREVIOUS` | no | HS256 키 회전용. 설정 시 이전 secret으로 서명된 토큰도 검증 통과. |
+| `PASSKEY_JWT_RSA_PRIVATE_PEM` | algorithm=RS256일 때 yes | PKCS#8 PEM. RS256 서명용 개인키. |
+| `PASSKEY_JWT_RSA_PUBLIC_PEM` | algorithm=RS256일 때 yes | SPKI PEM. `/.well-known/jwks.json`으로 공개. |
+| `PASSKEY_JWT_KID` | algorithm=RS256일 때 yes | JWKS의 key id. RP SDK가 kid로 키 선택. |
+| `PASSKEY_JWT_RSA_PRIVATE_PEM_PREVIOUS` / `..._PUBLIC_PEM_PREVIOUS` / `PASSKEY_JWT_KID_PREVIOUS` | no | RS256 키 회전용. 이전 공개키가 JWKS에 남아 outstanding 토큰이 만료까지 검증됨. |
 | `PASSKEY_JWT_ISSUER` | no | default `passkey-platform` |
 | `PASSKEY_JWT_ACCESS_TTL` | no | seconds, default 900 |
 | `PASSKEY_JWT_REFRESH_TTL` | no | seconds, default 2592000 |
@@ -65,6 +69,22 @@ PG의 `BYPASSRLS` 역할 속성은 Oracle에서는 `EXEMPT ACCESS POLICY` 시스
 | `PASSKEY_RL_REGISTRATION` | no | per-tenant per-minute, default 30 |
 | `PASSKEY_RL_AUTHENTICATION` | no | default 60 |
 | `PASSKEY_RL_DEFAULT` | no | default 120 |
+
+## JWT 서명 알고리즘 — HS256 vs RS256
+
+`PASSKEY_JWT_ALGORITHM`으로 액세스/리프레시 토큰 서명 방식을 선택합니다.
+
+- **HS256** (default) — 대칭 HMAC. `PASSKEY_JWT_SECRET` 하나만 있으면 동작. 토큰을 검증하려는 쪽이 같은 secret을 공유해야 하므로, **RP 백엔드와 비밀을 나눠야** 합니다.
+- **RS256** — 비대칭 RSA. 서버는 개인키로 서명하고 공개키를 `/.well-known/jwks.json`에 노출. RP 백엔드는 secret 공유 없이 JWKS로 로컬 검증. **Java RP SDK(`passkey-rp-spring-boot-starter`)는 RS256 + JWKS 전용**이므로, RP SDK를 쓰는 통합이 하나라도 있으면 서버는 RS256으로 운영해야 합니다.
+
+전환 시 `TokenService`는 cutover 호환을 위해 양쪽 알고리즘 검증을 모두 받아들이므로, `PASSKEY_JWT_ALGORITHM`을 RS256으로 바꾸고 RSA 키페어를 추가해도 HS256으로 서명된 outstanding 토큰은 만료까지 유효합니다.
+
+RS256 키페어 생성 예:
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt_private.pem
+openssl pkey -in jwt_private.pem -pubout -out jwt_public.pem
+# 두 PEM을 PASSKEY_JWT_RSA_PRIVATE_PEM / PASSKEY_JWT_RSA_PUBLIC_PEM 에 주입, PASSKEY_JWT_KID 는 임의 식별자
+```
 
 ## Docker 빌드 + 실행
 
@@ -87,22 +107,23 @@ docker run --rm -p 8080:8080 \
 
 ## 첫 admin 만들기
 
-Bootstrap admin은 직접 SQL로 삽입합니다 (콘솔이 아직 없으므로):
+`local`/`dev` 프로파일은 `DevAdminBootstrap`이 PLATFORM_OPERATOR 계정(`dev@local.test` / `devpassword!`)을 자동 시드하므로 별도 작업이 필요 없습니다. **prod**에서는 bootstrap admin을 직접 SQL로 삽입합니다 (`id`는 `RAW(16)`, `admin_user`는 VPD-exempt 테이블이라 `APP_MIGRATOR`로 접속해 삽입):
 
 ```sql
--- BCrypt hash for "ChangeMe!2026":
---   $2a$10$WlQUO0... (bcrypt 라이브러리로 생성)
-INSERT INTO passkey.admin_user (id, tenant_id, email, password_hash, display_name, role, status, created_at, updated_at)
-VALUES (gen_random_uuid(), NULL, 'ops@crosscert.local', '$2a$10$...', 'Bootstrap Operator', 'PLATFORM_OPERATOR', 'ACTIVE', now(), now());
+-- BCrypt hash for "ChangeMe!2026":  $2a$10$WlQUO0... (bcrypt 라이브러리로 생성)
+INSERT INTO admin_user (id, tenant_id, email, password_hash, display_name, role, status)
+VALUES (SYS_GUID(), NULL, 'ops@crosscert.local', '$2a$10$...', 'Bootstrap Operator', 'PLATFORM_OPERATOR', 'ACTIVE');
+-- created_at / updated_at 은 SYSTIMESTAMP DEFAULT 로 자동 채워짐
+COMMIT;
 ```
 
-이후 `/api/v1/admin/auth/login`으로 로그인 → `/api/v1/admin/tenants`로 첫 tenant 생성.
+이후 Admin Console(`admin/`) 또는 `/api/v1/admin/auth/login` API로 로그인 → 첫 tenant 생성. 이 계정으로 콘솔에서 RP_ADMIN 등 후속 운영자를 발급할 수 있습니다.
 
 ## 운영 체크리스트
 
 ### 🔴 배포 차단 (없으면 부팅 실패 또는 보안 사고)
 
-- [ ] **`PASSKEY_JWT_SECRET`** — 최소 32바이트 (HMAC-SHA256 키). secret manager (k8s Secret / Vault) 주입. 누락 시 startup fail.
+- [ ] **JWT 서명 키** — `PASSKEY_JWT_ALGORITHM=HS256`(default)이면 `PASSKEY_JWT_SECRET`(최소 32바이트 HMAC 키), `RS256`이면 `PASSKEY_JWT_RSA_PRIVATE_PEM` + `PASSKEY_JWT_RSA_PUBLIC_PEM` + `PASSKEY_JWT_KID`. secret manager (k8s Secret / Vault) 주입. 알고리즘에 맞는 키 누락 시 startup fail. RP Java SDK 통합이 있으면 RS256 필수 — 위 "JWT 서명 알고리즘" 참조.
 - [ ] **`PASSKEY_ADMIN_CONSOLE_ORIGIN`** — admin SPA가 백엔드와 다른 origin이면 필수 (예: `https://admin.passkey.example.com`). 누락 시 CORS pre-flight 실패 → 모든 admin API 호출 차단.
 - [ ] **`PASSKEY_MDS_ROOT_CA`** — `/etc/passkey/fido/Global_Sign_Root_CA.pem`에 FIDO Alliance Global Root CA PEM 마운트 (k8s Secret 권장). MDS 기본 ON이라 누락 시 strict tenant의 신규 등록이 `MDS_UNAVAILABLE`로 실패.
 - [ ] **`PASSKEY_ACTUATOR_PASSWORD`** — `/actuator/**` Basic auth. 누락 시 startup fail.
@@ -125,7 +146,7 @@ VALUES (gen_random_uuid(), NULL, 'ops@crosscert.local', '$2a$10$...', 'Bootstrap
 - [ ] **`audit_log` 미래 월 partition 사전 생성** — 운영 cron으로 매월 말일 다음 달 partition 생성 (V7 헤더 참고).
 - [ ] **MDS BLOB 갱신 모니터링** — `passkey_system_mds_refresh{result}` Prometheus counter. result=fail이 누적되면 alert.
 - [ ] **Audit hash chain 일일 검증 결과** — `AuditChainScheduler`가 00:30 UTC에 verify. 실패 시 ERROR 로그 + counter 증가 → alert.
-- [ ] **Backup: Postgres PITR** — audit_log는 컴플라이언스 자료이므로 retention 정책 별도 (최소 1년 권장). Redis는 ephemeral이라 backup 불필요.
+- [ ] **Backup: Oracle 백업/복구 (RMAN 또는 관리형 DB의 자동 백업 + PITR)** — audit_log는 컴플라이언스 자료이므로 retention 정책 별도 (최소 1년 권장). Redis는 ephemeral이라 backup 불필요.
 - [ ] **Flyway 새 마이그레이션 시 staging에서 먼저 적용**.
 
 ### 🟢 부트스트랩 1회성
@@ -139,8 +160,10 @@ VALUES (gen_random_uuid(), NULL, 'ops@crosscert.local', '$2a$10$...', 'Bootstrap
 
 | 변수 | 기본값 | 비고 |
 |---|---|---|
-| `PASSKEY_JWT_SECRET` | (필수) | 32바이트+ HMAC-SHA256 키 |
-| `PASSKEY_JWT_SECRET_PREVIOUS` | "" | 시크릿 교체 중인 동안만 설정 (이전 시크릿) |
+| `PASSKEY_JWT_ALGORITHM` | `HS256` | `HS256` 또는 `RS256`. RP Java SDK 통합 시 `RS256` 필수 |
+| `PASSKEY_JWT_SECRET` | algorithm=HS256 시 필수 | 32바이트+ HMAC 키. RS256에서는 미사용 |
+| `PASSKEY_JWT_SECRET_PREVIOUS` | "" | HS256 시크릿 교체 중인 동안만 설정 (이전 시크릿) |
+| `PASSKEY_JWT_RSA_PRIVATE_PEM` / `..._PUBLIC_PEM` / `PASSKEY_JWT_KID` | algorithm=RS256 시 필수 | RS256 키페어(PKCS#8/SPKI PEM) + kid |
 | `PASSKEY_ADMIN_CONSOLE_ORIGIN` | "" | cross-site admin 호스팅 시 필수 |
 | `PASSKEY_MDS_ENABLED` | `true` | air-gapped 환경이면 `false` |
 | `PASSKEY_MDS_ROOT_CA` | `file:/etc/passkey/fido/Global_Sign_Root_CA.pem` | MDS=true면 필수 |
