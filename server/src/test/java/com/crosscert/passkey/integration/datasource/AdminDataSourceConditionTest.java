@@ -27,4 +27,9 @@ class AdminDataSourceConditionTest extends IntegrationTestBase {
     assertThat(ctx.containsBean("adminDataSource")).isFalse();
     assertThat(ctx.containsBean("adminDataSourceProperties")).isFalse();
   }
+
+  @Test
+  void admin_platform_stats_service_is_absent_when_admin_disabled() {
+    assertThat(ctx.containsBean("adminPlatformStatsService")).isFalse();
+  }
 }
