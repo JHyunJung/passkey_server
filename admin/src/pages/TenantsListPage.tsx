@@ -29,8 +29,14 @@ import { EmptyState } from "@/components/EmptyState";
 import { MetricCard } from "@/components/MetricCard";
 import { PageHeader } from "@/components/PageHeader";
 import { apiGet, apiPost, PasskeyAdminError } from "@/lib/api";
+import { formatMaybeCount } from "@/lib/format";
 import { useToast } from "@/hooks/useToast";
-import type { CreateTenantRequest, PageResponse, TenantView } from "@/types/api";
+import type {
+  CreateTenantRequest,
+  PageResponse,
+  PlatformStatsView,
+  TenantView,
+} from "@/types/api";
 
 const tenantsKey = (page: number, size: number) =>
   ["tenants", { page, size }] as const;
@@ -45,6 +51,11 @@ export function TenantsListPage() {
       apiGet<PageResponse<TenantView>>(
         `/api/v1/admin/tenants?page=${page}&size=${size}`,
       ),
+  });
+  const { data: stats, isLoading: statsLoading } = useQuery({
+    queryKey: ["platformStats"],
+    queryFn: () => apiGet<PlatformStatsView>("/api/v1/admin/platform/stats"),
+    staleTime: 60_000,
   });
   const [createOpen, setCreateOpen] = React.useState(false);
 
@@ -75,17 +86,30 @@ export function TenantsListPage() {
         }
       />
 
-      {/* Metric strip — only "활성 Tenant" reflects live data; the other three
-          are visual scaffolding from the handoff design until backend stats land. */}
+      {/* Metric strip — "활성 Tenant" comes from the tenants page query; the other
+          three are cross-tenant aggregates from /api/v1/admin/platform/stats. Both
+          queries load independently, so each card resolves its own "…" state. */}
       <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           label="활성 Tenant"
           value={isLoading ? "…" : activeCount}
           sub={`전체 ${totalCount}건`}
         />
-        <MetricCard label="등록 Credential" value="—" sub="합산 지표 미연동" />
-        <MetricCard label="유효 API Key" value="—" sub="합산 지표 미연동" />
-        <MetricCard label="24h ceremony" value="—" sub="합산 지표 미연동" />
+        <MetricCard
+          label="등록 Credential"
+          value={statsLoading ? "…" : formatMaybeCount(stats?.activeCredentials)}
+          sub="전체 ACTIVE"
+        />
+        <MetricCard
+          label="유효 API Key"
+          value={statsLoading ? "…" : formatMaybeCount(stats?.activeApiKeys)}
+          sub="전체 ACTIVE"
+        />
+        <MetricCard
+          label="24h ceremony"
+          value={statsLoading ? "…" : formatMaybeCount(stats?.ceremonies24h)}
+          sub="최근 24h 시작 건수"
+        />
       </div>
 
       {isLoading ? (

@@ -22,3 +22,17 @@ export function formatPercent(numerator: number, denominator: number): string {
   if (denominator <= 0) return "—";
   return `${((numerator / denominator) * 100).toFixed(1)}%`;
 }
+
+// Hoisted to module scope (js-cache-function-results) — Intl.NumberFormat construction parses
+// locale data, so building it once and reusing it beats a per-call `new` in any render path.
+const COUNT_FORMATTER = new Intl.NumberFormat("ko-KR");
+
+/** Format an integer count with ko-KR thousands separators. */
+export function formatCount(n: number): string {
+  return COUNT_FORMATTER.format(n);
+}
+
+/** Like {@link formatCount} but renders an em-dash for an absent value. */
+export function formatMaybeCount(n: number | null | undefined): string {
+  return n === null || n === undefined ? "—" : formatCount(n);
+}
