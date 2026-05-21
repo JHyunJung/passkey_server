@@ -72,4 +72,30 @@ public class AuditAggregationService {
     }
     return Optional.empty();
   }
+
+  /**
+   * Most recent audit event timestamp for a single subject (e.g. one tenant user). audit_log links
+   * the subject loosely via {@code subject_id}; the caller already holds the tenant context, so the
+   * tenant_id predicate keeps VPD semantics consistent with {@link #lastEventAt}.
+   */
+  @Transactional(readOnly = true)
+  public Optional<OffsetDateTime> lastEventForSubject(UUID tenantId, String subjectId) {
+    Object raw =
+        em.createNativeQuery(
+                "SELECT MAX(created_at) FROM audit_log "
+                    + "WHERE tenant_id = :tid AND subject_id = :sid")
+            .setParameter("tid", tenantId)
+            .setParameter("sid", subjectId)
+            .getSingleResult();
+    if (raw == null) {
+      return Optional.empty();
+    }
+    if (raw instanceof OffsetDateTime odt) {
+      return Optional.of(odt);
+    }
+    if (raw instanceof java.sql.Timestamp ts) {
+      return Optional.of(ts.toInstant().atOffset(ZoneOffset.UTC));
+    }
+    return Optional.empty();
+  }
 }
