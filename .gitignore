@@ -31,3 +31,4 @@
 
 # Claude Code worktrees
 .claude/worktrees/
+.gstack/
