@@ -178,6 +178,27 @@ export interface CredentialStatsView {
   revokedReason: RevokedReasonCount[];
 }
 
+// ─── End Users (tenant_user) ──────────────────────────────────────────────────
+export interface EndUserView {
+  id: string;
+  externalId: string;
+  displayName: string | null;
+  activeCredentialCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EndUserDetailView {
+  id: string;
+  externalId: string;
+  displayName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  activeCredentialCount: number;
+  lastActivityAt: string | null;
+  credentials: CredentialView[];
+}
+
 // ─── Audit ────────────────────────────────────────────────────────────────────
 export type AuditEventType =
   | "TENANT_CREATED"

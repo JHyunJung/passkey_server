@@ -29,6 +29,12 @@ const AttestationPolicyTab = lazy(() =>
 const ApiKeysTab = lazy(() =>
   import("@/pages/tenant/ApiKeysTab").then((m) => ({ default: m.ApiKeysTab })),
 );
+const UsersTab = lazy(() =>
+  import("@/pages/tenant/UsersTab").then((m) => ({ default: m.UsersTab })),
+);
+const UserDetailPage = lazy(() =>
+  import("@/pages/tenant/UserDetailPage").then((m) => ({ default: m.UserDetailPage })),
+);
 const CredentialsTab = lazy(() =>
   import("@/pages/tenant/CredentialsTab").then((m) => ({ default: m.CredentialsTab })),
 );
@@ -80,6 +86,8 @@ export function App() {
                 <Route path="webauthn-config" element={<WebauthnConfigTab />} />
                 <Route path="attestation-policy" element={<AttestationPolicyTab />} />
                 <Route path="api-keys" element={<ApiKeysTab />} />
+                <Route path="users" element={<UsersTab />} />
+                <Route path="users/:tenantUserId" element={<UserDetailPage />} />
                 <Route path="credentials" element={<CredentialsTab />} />
                 <Route path="audit-logs" element={<AuditTab />} />
                 <Route path="funnel" element={<FunnelTab />} />
