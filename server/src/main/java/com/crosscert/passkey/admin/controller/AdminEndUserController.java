@@ -7,6 +7,7 @@ import com.crosscert.passkey.common.exception.ErrorCode;
 import com.crosscert.passkey.common.response.ApiResponse;
 import com.crosscert.passkey.common.response.PageResponse;
 import com.crosscert.passkey.credential.api.CredentialView;
+import com.crosscert.passkey.credential.domain.CredentialStatus;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
@@ -19,6 +20,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -85,7 +87,7 @@ public class AdminEndUserController {
       @RequestParam(defaultValue = "50") int size,
       @RequestParam(required = false) String q) {
     AdminAuthz.requireTenantAccess(tenantId);
-    Pageable pageable = PageRequest.of(page, size);
+    Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
     String trimmed = (q == null || q.isBlank()) ? null : q.trim();
     return ApiResponse.ok(
         PageResponse.from(
@@ -112,7 +114,8 @@ public class AdminEndUserController {
         credentialRepo.findAllByTenantUserId(tenantUserId).stream()
             .map(CredentialView::from)
             .toList();
-    long activeCount = credentials.stream().filter(c -> "ACTIVE".equals(c.status())).count();
+    long activeCount =
+        credentials.stream().filter(c -> CredentialStatus.ACTIVE.name().equals(c.status())).count();
     OffsetDateTime lastActivity =
         auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()).orElse(null);
     return ApiResponse.ok(
