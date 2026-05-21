@@ -24,7 +24,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { useMe } from "@/hooks/useMe";
 import { useToast } from "@/hooks/useToast";
 import { apiGet, apiPatch, PasskeyAdminError } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
+import { formatCount, formatDateTime, formatMaybeCount } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type {
   AuditEventType,
@@ -132,12 +132,12 @@ export function OverviewTab() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           label="등록 Credential"
-          value={fmtMaybe(stats?.activeCredentials)}
+          value={formatMaybeCount(stats?.activeCredentials)}
           sub="ACTIVE 상태"
         />
         <MetricCard
           label="유효 API Key"
-          value={fmtMaybe(stats?.activeApiKeys)}
+          value={formatMaybeCount(stats?.activeApiKeys)}
           sub="ACTIVE 상태"
         />
         <MetricCard
@@ -145,7 +145,7 @@ export function OverviewTab() {
           value={regRatio ? `${(regRatio.r * 100).toFixed(1)}%` : "—"}
           sub={
             regRatio
-              ? `${fmt(regRatio.s)} / ${fmt(regRatio.a)} 시도`
+              ? `${formatCount(regRatio.s)} / ${formatCount(regRatio.a)} 시도`
               : "데이터 부족"
           }
         />
@@ -154,7 +154,7 @@ export function OverviewTab() {
           value={authRatio ? `${(authRatio.r * 100).toFixed(1)}%` : "—"}
           sub={
             authRatio
-              ? `${fmt(authRatio.s)} / ${fmt(authRatio.a)} 시도`
+              ? `${formatCount(authRatio.s)} / ${formatCount(authRatio.a)} 시도`
               : "데이터 부족"
           }
         />
@@ -485,14 +485,6 @@ function EventDot({ type }: { type: AuditEventType }) {
 function ratio(num?: number, den?: number) {
   if (num === undefined || den === undefined || den === 0) return null;
   return { r: num / den, s: num, a: den };
-}
-
-function fmt(n: number) {
-  return new Intl.NumberFormat("ko-KR").format(n);
-}
-
-function fmtMaybe(n?: number) {
-  return n === undefined ? "—" : fmt(n);
 }
 
 function tail(s: string, n = 12) {

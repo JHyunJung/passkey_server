@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatPercent, lastN } from "@/lib/format";
+import {
+  formatCount,
+  formatMaybeCount,
+  formatPercent,
+  lastN,
+} from "@/lib/format";
 
 describe("lastN", () => {
   it("returns em-dash for empty/null", () => {
@@ -21,5 +26,26 @@ describe("formatPercent", () => {
   });
   it("computes one-decimal percent", () => {
     expect(formatPercent(33, 100)).toBe("33.0%");
+  });
+});
+
+describe("formatCount", () => {
+  it("groups thousands", () => {
+    expect(formatCount(1234567)).toBe("1,234,567");
+  });
+  it("leaves small numbers unchanged", () => {
+    expect(formatCount(0)).toBe("0");
+    expect(formatCount(42)).toBe("42");
+  });
+});
+
+describe("formatMaybeCount", () => {
+  it("returns em-dash for null/undefined", () => {
+    expect(formatMaybeCount(null)).toBe("—");
+    expect(formatMaybeCount(undefined)).toBe("—");
+  });
+  it("formats a present number", () => {
+    expect(formatMaybeCount(1234)).toBe("1,234");
+    expect(formatMaybeCount(0)).toBe("0");
   });
 });

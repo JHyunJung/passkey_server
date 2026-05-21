@@ -22,3 +22,13 @@ export function formatPercent(numerator: number, denominator: number): string {
   if (denominator <= 0) return "—";
   return `${((numerator / denominator) * 100).toFixed(1)}%`;
 }
+
+/** Format an integer count with ko-KR thousands separators. */
+export function formatCount(n: number): string {
+  return new Intl.NumberFormat("ko-KR").format(n);
+}
+
+/** Like {@link formatCount} but renders an em-dash for an absent value. */
+export function formatMaybeCount(n: number | null | undefined): string {
+  return n === null || n === undefined ? "—" : formatCount(n);
+}

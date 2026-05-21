@@ -318,6 +318,13 @@ export interface OverviewStatsView {
   lastAuditAt: string | null;
 }
 
+/** Cross-tenant aggregate counts for the platform-wide /tenants dashboard. */
+export interface PlatformStatsView {
+  activeCredentials: number;
+  activeApiKeys: number;
+  ceremonies24h: number;
+}
+
 // ─── Funnel ───────────────────────────────────────────────────────────────────
 export interface FunnelView {
   registrationStarted: number;
