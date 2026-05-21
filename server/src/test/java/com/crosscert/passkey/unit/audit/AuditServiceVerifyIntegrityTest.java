@@ -39,7 +39,9 @@ class AuditServiceVerifyIntegrityTest {
 
   @BeforeEach
   void setUp() {
-    service = new AuditService(repo, new ObjectMapper());
+    // verifyIntegrity exercises only the hash-chain replay — the async writer is never reached,
+    // so a null dependency is sufficient here.
+    service = new AuditService(repo, new ObjectMapper(), null);
   }
 
   @Test

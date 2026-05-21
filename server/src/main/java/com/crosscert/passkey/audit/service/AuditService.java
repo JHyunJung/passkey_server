@@ -24,9 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Stream;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,13 +43,29 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class AuditService {
 
   private final AuditEntryRepository repo;
   private final ObjectMapper objectMapper;
 
+  /**
+   * Off-thread writer for {@link #appendAfterCommit}. {@code @Lazy} breaks the AuditService ↔
+   * AsyncAuditWriter constructor cycle ({@code AsyncAuditWriter} depends on {@code
+   * AuditService#append}); the proxy is still a distinct bean, so {@code @Async} on {@link
+   * AsyncAuditWriter#appendAsync} is honoured.
+   */
+  private final AsyncAuditWriter asyncAuditWriter;
+
   @PersistenceContext private EntityManager em;
+
+  public AuditService(
+      AuditEntryRepository repo,
+      ObjectMapper objectMapper,
+      @org.springframework.context.annotation.Lazy AsyncAuditWriter asyncAuditWriter) {
+    this.repo = repo;
+    this.objectMapper = objectMapper;
+    this.asyncAuditWriter = asyncAuditWriter;
+  }
 
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void append(
@@ -132,38 +146,12 @@ public class AuditService {
         new TransactionSynchronization() {
           @Override
           public void afterCommit() {
-            appendAsync(context, eventType, actorType, actorId, subjectType, subjectId, payload);
+            // Cross-bean call: AsyncAuditWriter is a separate proxied bean, so @Async actually
+            // takes effect (a self-invocation would silently run inline on this thread).
+            asyncAuditWriter.appendAsync(
+                context, eventType, actorType, actorId, subjectType, subjectId, payload);
           }
         });
-  }
-
-  @Async("auditExecutor")
-  public void appendAsync(
-      TenantContext capturedContext,
-      AuditEventType eventType,
-      ActorType actorType,
-      String actorId,
-      String subjectType,
-      String subjectId,
-      Map<String, Object> payload) {
-    try {
-      TenantContextHolder.set(capturedContext);
-      append(eventType, actorType, actorId, subjectType, subjectId, payload);
-    } catch (RuntimeException ex) {
-      // Audit write failed after the user-visible transaction already committed — surface it so
-      // ops can reconcile. The integrity scheduler will flag any resulting chain gap.
-      log.error(
-          "audit.append.async.failed tenantId={} event={} actor={}:{} subject={}:{} reason={}",
-          capturedContext.tenantId(),
-          eventType,
-          actorType,
-          actorId,
-          subjectType,
-          subjectId,
-          ex.toString());
-    } finally {
-      TenantContextHolder.clear();
-    }
   }
 
   /**
