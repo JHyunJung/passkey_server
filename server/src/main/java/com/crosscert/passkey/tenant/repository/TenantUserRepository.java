@@ -17,8 +17,8 @@ public interface TenantUserRepository extends JpaRepository<TenantUser, UUID> {
   long countByTenantId(UUID tenantId);
 
   /**
-   * Row projection for the admin end-user list. {@code activeCredentialCount} comes from a
-   * LEFT JOIN aggregate so the list endpoint avoids an N+1 count-per-row.
+   * Row projection for the admin end-user list. {@code activeCredentialCount} comes from a LEFT
+   * JOIN aggregate so the list endpoint avoids an N+1 count-per-row.
    */
   interface EndUserRow {
     UUID getId();

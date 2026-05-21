@@ -152,8 +152,7 @@ class AdminEndUserControllerSliceTest {
         .andExpect(status().isForbidden())
         .andExpect(jsonPath("$.code").value("M002"));
 
-    verify(tenantUserRepo, never())
-        .findByTenantIdWithSearch(any(), any(), any(Pageable.class));
+    verify(tenantUserRepo, never()).findByTenantIdWithSearch(any(), any(), any(Pageable.class));
   }
 
   private static EndUserRow endUserRow(
