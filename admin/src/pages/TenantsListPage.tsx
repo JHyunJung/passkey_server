@@ -48,7 +48,9 @@ export function TenantsListPage() {
   });
   const [createOpen, setCreateOpen] = React.useState(false);
 
-  const all = data?.content ?? [];
+  // Memoised so its identity is stable — otherwise the `filtered` useMemo below would recompute
+  // every render regardless of `q` (exhaustive-deps / rerender-derived-state-no-effect).
+  const all = React.useMemo(() => data?.content ?? [], [data?.content]);
   const activeCount = all.filter((t) => t.status === "ACTIVE").length;
   const totalCount = data?.totalElements ?? all.length;
   const filtered = React.useMemo(() => {

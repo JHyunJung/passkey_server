@@ -457,18 +457,21 @@ function KV({ k, v }: { k: React.ReactNode; v: React.ReactNode }) {
   );
 }
 
+// Hoisted to module scope (js-cache-function-results / rendering-hoist-jsx) — a static
+// [color, background] palette has no reason to be rebuilt per event row.
+const EVENT_DOT_PALETTE: Record<string, [string, string]> = {
+  CREDENTIAL_AUTHENTICATED: ["var(--success)", "var(--success-soft)"],
+  CREDENTIAL_REGISTERED: ["var(--info)", "var(--info-soft)"],
+  CREDENTIAL_REVOKED: ["var(--danger)", "var(--danger-soft)"],
+  API_KEY_ISSUED: ["var(--violet)", "var(--violet-soft)"],
+  API_KEY_REVOKED: ["var(--danger)", "var(--danger-soft)"],
+  WEBAUTHN_CONFIG_UPDATED: ["var(--warning)", "var(--warning-soft)"],
+  SIGNATURE_COUNTER_REGRESSION: ["var(--danger)", "var(--danger-soft)"],
+  ATTESTATION_TRUST_FAILED: ["var(--danger)", "var(--danger-soft)"],
+};
+
 function EventDot({ type }: { type: AuditEventType }) {
-  const palette: Record<string, [string, string]> = {
-    CREDENTIAL_AUTHENTICATED: ["var(--success)", "var(--success-soft)"],
-    CREDENTIAL_REGISTERED: ["var(--info)", "var(--info-soft)"],
-    CREDENTIAL_REVOKED: ["var(--danger)", "var(--danger-soft)"],
-    API_KEY_ISSUED: ["var(--violet)", "var(--violet-soft)"],
-    API_KEY_REVOKED: ["var(--danger)", "var(--danger-soft)"],
-    WEBAUTHN_CONFIG_UPDATED: ["var(--warning)", "var(--warning-soft)"],
-    SIGNATURE_COUNTER_REGRESSION: ["var(--danger)", "var(--danger-soft)"],
-    ATTESTATION_TRUST_FAILED: ["var(--danger)", "var(--danger-soft)"],
-  };
-  const [c, bg] = palette[type] ?? ["var(--text-mute)", "var(--surface-3)"];
+  const [c, bg] = EVENT_DOT_PALETTE[type] ?? ["var(--text-mute)", "var(--surface-3)"];
   return (
     <div
       className="grid h-6 w-6 shrink-0 place-items-center rounded"

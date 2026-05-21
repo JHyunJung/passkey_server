@@ -96,8 +96,10 @@ export function CredentialsTab() {
     enabled: !!tenantId,
   });
 
-  // Server-side filter (P2-4) — data.content is already filtered.
-  const filtered = data?.content ?? [];
+  // Server-side filter (P2-4) — data.content is already filtered. Memoised so its identity is
+  // stable across renders, otherwise the `credentialCountForUser` useCallback below would be
+  // rebuilt every render (rerender-derived-state-no-effect / exhaustive-deps).
+  const filtered = React.useMemo(() => data?.content ?? [], [data?.content]);
 
   const { data: me } = useMe();
   const isPlatform = me?.role === "PLATFORM_OPERATOR";

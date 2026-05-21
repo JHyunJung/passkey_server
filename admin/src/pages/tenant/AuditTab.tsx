@@ -270,19 +270,22 @@ function previewPayload(raw: string): string {
   return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
 }
 
+// Hoisted to module scope (js-cache-function-results) — this lookup table is static, so
+// rebuilding it on every row render was pure waste in a 50-row table.
+const EVENT_BADGE_VARIANT: Partial<Record<AuditEventType, BadgeProps["variant"]>> = {
+  CREDENTIAL_AUTHENTICATED: "success",
+  CREDENTIAL_REGISTERED: "info",
+  CREDENTIAL_REVOKED: "destructive",
+  API_KEY_ISSUED: "violet",
+  API_KEY_REVOKED: "destructive",
+  WEBAUTHN_CONFIG_UPDATED: "warning",
+  SIGNATURE_COUNTER_REGRESSION: "destructive",
+  ATTESTATION_TRUST_FAILED: "destructive",
+  TENANT_CREATED: "success",
+};
+
 function badgeVariantFor(e: AuditEventType): BadgeProps["variant"] {
-  const map: Partial<Record<AuditEventType, BadgeProps["variant"]>> = {
-    CREDENTIAL_AUTHENTICATED: "success",
-    CREDENTIAL_REGISTERED: "info",
-    CREDENTIAL_REVOKED: "destructive",
-    API_KEY_ISSUED: "violet",
-    API_KEY_REVOKED: "destructive",
-    WEBAUTHN_CONFIG_UPDATED: "warning",
-    SIGNATURE_COUNTER_REGRESSION: "destructive",
-    ATTESTATION_TRUST_FAILED: "destructive",
-    TENANT_CREATED: "success",
-  };
-  return map[e] ?? "default";
+  return EVENT_BADGE_VARIANT[e] ?? "default";
 }
 
 function timeAgo(iso: string) {

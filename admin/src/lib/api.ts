@@ -21,11 +21,13 @@ export class PasskeyAdminError extends Error {
 
 const MUTATION_METHODS = new Set(["POST", "PUT", "DELETE", "PATCH"]);
 
-function readCookie(name: string): string | undefined {
+// Hoisted: the only cookie ever read is the CSRF token, so the pattern is a fixed literal
+// (js-hoist-regexp) — no per-request RegExp construction or name-escaping needed.
+const XSRF_COOKIE_RE = /(?:^|;\s*)XSRF-TOKEN=([^;]*)/;
+
+function readXsrfToken(): string | undefined {
   if (typeof document === "undefined") return undefined;
-  const match = document.cookie.match(
-    new RegExp("(?:^|;\\s*)" + name.replace(/([.$?*|{}()[\\]\\\\+])/g, "\\$1") + "=([^;]*)"),
-  );
+  const match = document.cookie.match(XSRF_COOKIE_RE);
   return match ? decodeURIComponent(match[1]!) : undefined;
 }
 
@@ -39,7 +41,7 @@ export const api = axios.create({
 /** Echo the XSRF-TOKEN cookie value into the X-XSRF-TOKEN header on mutation requests. */
 api.interceptors.request.use((config) => {
   if (config.method && MUTATION_METHODS.has(config.method.toUpperCase())) {
-    const token = readCookie("XSRF-TOKEN");
+    const token = readXsrfToken();
     if (token) {
       config.headers = config.headers ?? {};
       (config.headers as Record<string, string>)["X-XSRF-TOKEN"] = token;

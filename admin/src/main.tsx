@@ -6,7 +6,8 @@ import { App } from "./App";
 import { AppToastProvider } from "@/hooks/useToast";
 import { ME_KEY } from "@/hooks/useMe";
 import { setUnauthorisedHandler } from "@/lib/api";
-import { SentryErrorBoundary, initSentry } from "@/lib/sentry";
+import { ErrorBoundary } from "@/lib/ErrorBoundary";
+import { initSentry } from "@/lib/sentry";
 import "./index.css";
 
 initSentry();
@@ -57,7 +58,7 @@ function FatalErrorFallback({ resetError }: { resetError: () => void }) {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <SentryErrorBoundary fallback={({ resetError }) => <FatalErrorFallback resetError={resetError} />}>
+    <ErrorBoundary fallback={({ resetError }) => <FatalErrorFallback resetError={resetError} />}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <AppToastProvider>
@@ -65,6 +66,6 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           </AppToastProvider>
         </BrowserRouter>
       </QueryClientProvider>
-    </SentryErrorBoundary>
+    </ErrorBoundary>
   </React.StrictMode>,
 );
