@@ -13,7 +13,7 @@ import com.tngtech.archunit.lang.SimpleConditionEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.bind.annotation.RequestMapping;
 
-/** M1 architecture invariants. Six rules — see Plan §3.4. */
+/** M1 architecture invariants. Seven rules — see Plan §3.4 (Rule 7 added for the fido2 core). */
 class PackageArchitectureTest {
 
   private static final String ROOT = "com.crosscert.passkey";
