@@ -75,6 +75,37 @@ class CborDecoderTest {
         .isInstanceOf(CborDecodeException.class);
   }
 
+  @Test
+  void rejects_oversized_array_length() {
+    // 배열 헤더가 len=2^31-1을 주장하지만 입력은 5바이트뿐 — 컬렉션 할당 전에 거부돼야 함.
+    assertThatThrownBy(() -> CborDecoder.decode(hex("9a7fffffff")))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_oversized_map_length() {
+    assertThatThrownBy(() -> CborDecoder.decode(hex("ba7fffffff")))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_oversized_byte_string_length() {
+    assertThatThrownBy(() -> CborDecoder.decode(hex("5a7fffffff")))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_deeply_nested_input() {
+    // 0x81 = 1원소 배열. 40겹 중첩 — 깊이 제한(32)을 초과해야 함.
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < 40; i++) {
+      sb.append("81");
+    }
+    sb.append("00"); // 가장 안쪽 값
+    assertThatThrownBy(() -> CborDecoder.decode(hex(sb.toString())))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
   private static byte[] hex(String s) {
     byte[] out = new byte[s.length() / 2];
     for (int i = 0; i < out.length; i++) {
