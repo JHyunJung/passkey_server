@@ -171,6 +171,17 @@ class AuthenticationVerifierTest {
         .isEqualTo(FailureReason.MALFORMED_CBOR);
   }
 
+  @Test
+  void rejects_null_inputs() {
+    assertThatThrownBy(
+            () ->
+                new AuthenticationVerifier()
+                    .verify(
+                        new AuthenticationVerificationRequest(
+                            null, null, null, null, null, null, null, false)))
+        .isInstanceOf(Fido2VerificationException.class);
+  }
+
   /** Builds a self-consistent assertion: real EC key, real signature over authData||clientHash. */
   private static final class Fixture {
     final KeyPair keyPair;

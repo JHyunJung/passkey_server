@@ -26,6 +26,17 @@ public final class AuthenticationVerifier {
   /** Verify the assertion described by {@code req}, or throw {@link Fido2VerificationException}. */
   public AuthenticationVerificationResult verify(AuthenticationVerificationRequest req)
       throws Fido2VerificationException {
+    if (req == null
+        || req.clientDataJson() == null
+        || req.authenticatorData() == null
+        || req.signature() == null
+        || req.expectedChallenge() == null
+        || req.expectedOrigins() == null
+        || req.expectedRpId() == null
+        || req.storedCoseKeyBytes() == null) {
+      throw new Fido2VerificationException(
+          FailureReason.MALFORMED_CLIENT_DATA, "authentication request is missing required inputs");
+    }
     CollectedClientData clientData = parseClientData(req.clientDataJson());
 
     if (!"webauthn.get".equals(clientData.type())) {
