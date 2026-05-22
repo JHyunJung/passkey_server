@@ -20,30 +20,16 @@ import com.crosscert.passkey.credential.domain.Credential;
 import com.crosscert.passkey.credential.domain.TenantWebauthnConfig;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.credential.webauthn.Base64UrlCodec;
+import com.crosscert.passkey.fido2.AuthenticationVerificationRequest;
+import com.crosscert.passkey.fido2.AuthenticationVerificationResult;
+import com.crosscert.passkey.fido2.AuthenticationVerifier;
+import com.crosscert.passkey.fido2.Fido2VerificationException;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
-import com.webauthn4j.WebAuthnManager;
-import com.webauthn4j.authenticator.Authenticator;
-import com.webauthn4j.authenticator.AuthenticatorImpl;
-import com.webauthn4j.converter.AttestedCredentialDataConverter;
-import com.webauthn4j.converter.exception.DataConversionException;
-import com.webauthn4j.converter.util.ObjectConverter;
-import com.webauthn4j.data.AuthenticationData;
-import com.webauthn4j.data.AuthenticationParameters;
-import com.webauthn4j.data.AuthenticationRequest;
-import com.webauthn4j.data.attestation.authenticator.AttestedCredentialData;
-import com.webauthn4j.data.attestation.statement.NoneAttestationStatement;
-import com.webauthn4j.data.client.Origin;
-import com.webauthn4j.data.client.challenge.Challenge;
-import com.webauthn4j.data.client.challenge.DefaultChallenge;
-import com.webauthn4j.server.ServerProperty;
-import com.webauthn4j.verifier.exception.VerificationException;
 import java.security.SecureRandom;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -61,16 +47,12 @@ public class AuthenticationService {
   private final TenantUserRepository userRepo;
   private final CredentialRepository credentialRepo;
   private final ChallengeStore challengeStore;
-  private final WebAuthnManager webAuthnManager;
   private final TokenService tokenService;
   private final AuditService auditService;
   private final WebauthnCeremonyProperties ceremonyProps;
   private final com.crosscert.passkey.ratelimit.RateLimiter rateLimiter;
   private final com.crosscert.passkey.ratelimit.RateLimitProperties rateLimitProps;
   private final com.crosscert.passkey.credential.metrics.CeremonyMetrics metrics;
-  private final ObjectConverter objectConverter = new ObjectConverter();
-  private final AttestedCredentialDataConverter attestedConverter =
-      new AttestedCredentialDataConverter(objectConverter);
 
   /**
    * Begins an authentication ceremony. When {@code externalUserId} is provided, returns the active
@@ -150,16 +132,16 @@ public class AuthenticationService {
     enforceCredentialRateLimit(cfg.getTenantId(), req.credentialId());
     ChallengeRecord stored = consumeChallenge(req);
     Credential credential = lookupActiveCredential(req, cfg.getTenantId());
-    AuthenticationData authnData = verifyAssertion(cfg, stored, credential, req);
+    AuthenticationVerificationResult authnResult = verifyAssertion(cfg, stored, credential, req);
 
-    long newCounter = authnData.getAuthenticatorData().getSignCount();
+    long newCounter = authnResult.newSignCount();
     updateCounterOrAudit(credential, newCounter);
 
     // CTAP 2.1 BS flag — may flip between authentications as the user toggles
     // iCloud Keychain / Google Password Manager backup. Reconcile and audit on change so
     // compliance-sensitive RPs can react (e.g. downgrade trust on newly synced credentials).
     boolean previousBackupState = credential.isBackupState();
-    boolean newBackupState = authnData.getAuthenticatorData().isFlagBS();
+    boolean newBackupState = authnResult.backupState();
     boolean backupStateChanged = credential.updateBackupState(newBackupState);
 
     TenantUser user =
@@ -298,48 +280,29 @@ public class AuthenticationService {
     return credential;
   }
 
-  private AuthenticationData verifyAssertion(
+  private AuthenticationVerificationResult verifyAssertion(
       TenantWebauthnConfig cfg,
       ChallengeRecord stored,
       Credential credential,
       AuthenticationVerifyRequest req) {
-    AttestedCredentialData acd = attestedConverter.convert(credential.getPublicKeyCose());
-    Authenticator authenticator =
-        new AuthenticatorImpl(
-            acd, new NoneAttestationStatement(), credential.getSignatureCounter());
-
-    byte[] userHandle =
-        req.userHandleB64u() == null ? null : Base64UrlCodec.decode(req.userHandleB64u());
-    AuthenticationRequest authnReq =
-        new AuthenticationRequest(
-            Base64UrlCodec.decode(req.credentialId()),
-            userHandle,
+    AuthenticationVerificationRequest verifyReq =
+        new AuthenticationVerificationRequest(
             Base64UrlCodec.decode(req.authenticatorDataB64u()),
             Base64UrlCodec.decode(req.clientDataJsonB64u()),
-            Base64UrlCodec.decode(req.signatureB64u()));
-
-    Challenge challenge = new DefaultChallenge(Base64UrlCodec.decode(stored.challengeB64u()));
-    Set<Origin> origins = new LinkedHashSet<>();
-    for (String o : cfg.originList()) {
-      origins.add(new Origin(o));
-    }
-    ServerProperty serverProperty = new ServerProperty(origins, cfg.getRpId(), challenge);
-    // Only REQUIRED is enforced server-side; PREFERRED/DISCOURAGED are best-effort hints to the
-    // authenticator. See UserVerificationPolicy javadoc.
-    boolean userVerificationRequired = cfg.getUserVerification().isStrictRequired();
-    AuthenticationParameters params =
-        new AuthenticationParameters(
-            serverProperty, authenticator, null, userVerificationRequired, true);
-
+            Base64UrlCodec.decode(req.signatureB64u()),
+            Base64UrlCodec.decode(stored.challengeB64u()),
+            cfg.originList(),
+            cfg.getRpId(),
+            credential.getPublicKeyCose(),
+            cfg.getUserVerification().isStrictRequired());
     try {
-      AuthenticationData authnData = webAuthnManager.parse(authnReq);
-      webAuthnManager.verify(authnData, params);
-      return authnData;
-    } catch (DataConversionException | VerificationException e) {
+      return new AuthenticationVerifier().verify(verifyReq);
+    } catch (Fido2VerificationException e) {
       log.warn(
-          "auth.assertion.invalid tenantId={} credentialId={} reason={}",
+          "auth.assertion.invalid tenantId={} credentialId={} reason={} detail={}",
           cfg.getTenantId(),
           LogSanitiser.forLog(req.credentialId()),
+          e.reason(),
           LogSanitiser.forLog(e.getMessage()));
       metrics.getAuthenticationFailure().increment();
       throw new BusinessException(ErrorCode.ASSERTION_INVALID, e.getMessage());
