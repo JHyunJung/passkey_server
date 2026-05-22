@@ -90,6 +90,11 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
     testImplementation("org.assertj:assertj-core")
+
+    // BouncyCastle — used only by unit tests to build §8.2.1-compliant self-signed X.509
+    // attestation certificates as packed full-attestation fixtures. Not on the production
+    // classpath; webauthn4j-metadata does not pull BouncyCastle in transitively.
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -104,17 +109,8 @@ tasks.withType<JavaCompile>().configureEach {
         "UnusedVariable")
 }
 
-tasks.withType<JavaCompile>().matching { it.name == "compileTestJava" }.configureEach {
-    // Allow test code to use sun.security.x509 for generating self-signed X.509 certificates
-    // in unit tests (e.g. packed full attestation fixture). Production code never references
-    // these internal APIs — ArchUnit Rule 7 ensures only allowed packages reach fido2/*.
-    options.compilerArgs.addAll(listOf("--add-exports", "java.base/sun.security.x509=ALL-UNNAMED"))
-}
-
 tasks.withType<Test> {
     useJUnitPlatform()
-    // Allow test JVM to access sun.security.x509 for self-signed certificate generation.
-    jvmArgs("--add-exports", "java.base/sun.security.x509=ALL-UNNAMED")
     // macOS Docker Desktop: socket is under ~/.docker/run/, not /var/run/docker.sock.
     // Set DOCKER_HOST for the forked test JVM before Testcontainers initializes.
     val home = System.getProperty("user.home")

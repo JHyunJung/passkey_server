@@ -16,18 +16,30 @@ import java.security.SignatureException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import javax.naming.InvalidNameException;
+import javax.naming.ldap.LdapName;
+import javax.naming.ldap.Rdn;
 
 /**
  * The {@code packed} attestation format (WebAuthn L3 §8.2). Handles both the self-attestation
  * variant (no {@code x5c}) and the full-attestation variant (with an {@code x5c} certificate
- * chain). This verifier checks only that the attestation signature is valid — it does NOT validate
- * the certificate chain's trust path up to a root CA. Trust-anchor validation is the job of the
- * strict / MDS path (Milestone B); a non-strict tenant accepts packed full attestation at the same
- * trust level webauthn4j's non-strict manager did.
+ * chain). For the full variant this verifier validates the attestation certificate's WebAuthn L3
+ * §8.2.1 requirements (X.509 version 3, Basic Constraints CA=false, subject-OU "Authenticator
+ * Attestation", and — when present — the FIDO AAGUID extension matching the authenticator data) and
+ * verifies the attestation signature, but it does NOT validate the certificate chain's trust path
+ * up to a root CA. Trust-anchor validation is the strict / MDS path's job (Milestone B) — this
+ * matches the trust level webauthn4j's non-strict manager provides.
  */
 public final class PackedAttestationVerifier implements AttestationVerifier {
+
+  /** The FIDO AAGUID certificate extension OID (WebAuthn L3 §8.2.1). */
+  private static final String FIDO_AAGUID_EXTENSION_OID = "1.3.6.1.4.1.45724.1.1.4";
+
+  /** The exact subject-OU value WebAuthn L3 §8.2.1 mandates for a packed attestation cert. */
+  private static final String REQUIRED_SUBJECT_OU = "Authenticator Attestation";
 
   @Override
   public String format() {
@@ -67,19 +79,22 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
     // 4. Branch on x5c presence.
     Object x5cObj = attStmt.get("x5c");
     if (x5cObj != null) {
-      return verifyFull(x5cObj, algValue, signedData, signature);
+      return verifyFull(x5cObj, acd, algValue, signedData, signature);
     } else {
       return verifySelf(acd, algValue, signedData, signature);
     }
   }
 
   /**
-   * Full attestation (x5c present): verify the signature with the attestation certificate's public
-   * key. The certificate chain trust path is NOT validated here — that is Milestone B / MDS strict
-   * mode. This matches the behavior of webauthn4j's non-strict manager.
+   * Full attestation (x5c present): validate the attestation certificate's WebAuthn L3 §8.2.1
+   * requirements and verify the attestation signature with the certificate's public key. The
+   * certificate chain trust path (up to a root CA) is NOT validated here — that is the strict / MDS
+   * path's job (Milestone B). The §8.2.1 certificate-integrity checks below are what webauthn4j's
+   * {@code PackedAttestationStatementVerifier} performs regardless of strict mode; only
+   * trust-anchor validation is gated on strict mode.
    */
   private static AttestationResult verifyFull(
-      Object x5cObj, long algValue, byte[] signedData, byte[] signature)
+      Object x5cObj, AttestedCredentialData acd, long algValue, byte[] signedData, byte[] signature)
       throws Fido2VerificationException {
     try {
       // x5c is a CBOR array of DER-encoded X.509 certificates.
@@ -98,6 +113,9 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
       CertificateFactory cf = CertificateFactory.getInstance("X.509");
       X509Certificate cert =
           (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certDer));
+
+      // WebAuthn L3 §8.2.1: validate the attestation certificate's integrity requirements.
+      verifyAttestationCertificateRequirements(cert, acd);
 
       // Verify the signature using the attestation cert's public key.
       String jcaAlg = jcaAlgorithmForCoseAlg(algValue);
@@ -130,6 +148,134 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
           FailureReason.ATTESTATION_INVALID,
           "packed full attestation verification failed: " + e.getMessage());
     }
+  }
+
+  /**
+   * Validates the WebAuthn L3 §8.2.1 attestation-certificate requirements: X.509 version 3, Basic
+   * Constraints CA component {@code false}, subject organizational unit exactly {@code
+   * "Authenticator Attestation"}, and — when the optional FIDO AAGUID extension is present — its
+   * value matching the authenticator data's AAGUID. These are certificate-integrity checks; the
+   * certificate chain's trust path is not validated here.
+   */
+  private static void verifyAttestationCertificateRequirements(
+      X509Certificate cert, AttestedCredentialData acd) throws Fido2VerificationException {
+    // §8.2.1: the attestation certificate MUST be X.509 version 3 (getVersion() returns 3).
+    if (cert.getVersion() != 3) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID,
+          "packed attestation cert is not X.509 version 3: v" + cert.getVersion());
+    }
+
+    // §8.2.1: the Basic Constraints extension MUST have the CA component set to false.
+    // getBasicConstraints() returns -1 when the cert is not a CA; any other value means CA=true.
+    if (cert.getBasicConstraints() != -1) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID,
+          "packed attestation cert Basic Constraints CA must be false");
+    }
+
+    // §8.2.1: the subject OU MUST be exactly "Authenticator Attestation".
+    String subjectOu = subjectOrganizationalUnit(cert);
+    if (!REQUIRED_SUBJECT_OU.equals(subjectOu)) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID,
+          "packed attestation cert subject OU must be \""
+              + REQUIRED_SUBJECT_OU
+              + "\" but was \""
+              + subjectOu
+              + "\"");
+    }
+
+    // §8.2.1: if the FIDO AAGUID extension is present, its value MUST match the authData AAGUID.
+    byte[] certAaguid = fidoAaguidExtension(cert);
+    if (certAaguid != null && !Arrays.equals(certAaguid, acd.aaguid())) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID,
+          "packed attestation cert AAGUID extension does not match authenticator data AAGUID");
+    }
+  }
+
+  /**
+   * Returns the value of the subject DN's {@code OU} (organizationalUnitName) attribute, or {@code
+   * null} when the subject has no OU RDN.
+   */
+  private static String subjectOrganizationalUnit(X509Certificate cert)
+      throws Fido2VerificationException {
+    try {
+      LdapName subject = new LdapName(cert.getSubjectX500Principal().getName());
+      for (Rdn rdn : subject.getRdns()) {
+        if ("OU".equalsIgnoreCase(rdn.getType())) {
+          return String.valueOf(rdn.getValue());
+        }
+      }
+      return null;
+    } catch (InvalidNameException e) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID,
+          "packed attestation cert subject DN is unparseable: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Extracts the 16-byte AAGUID from the FIDO AAGUID certificate extension (OID {@code
+   * 1.3.6.1.4.1.45724.1.1.4}), or {@code null} when the extension is absent (it is optional).
+   *
+   * <p>{@link X509Certificate#getExtensionValue} returns the extension value wrapped in an outer
+   * DER {@code OCTET STRING}. The FIDO AAGUID extension's own content is itself a DER {@code OCTET
+   * STRING} holding the raw 16 AAGUID bytes — so two {@code OCTET STRING} layers must be unwrapped.
+   */
+  private static byte[] fidoAaguidExtension(X509Certificate cert)
+      throws Fido2VerificationException {
+    byte[] raw = cert.getExtensionValue(FIDO_AAGUID_EXTENSION_OID);
+    if (raw == null) {
+      return null; // extension is optional
+    }
+    byte[] inner = unwrapDerOctetString(raw, "FIDO AAGUID extension outer OCTET STRING");
+    byte[] aaguid = unwrapDerOctetString(inner, "FIDO AAGUID extension inner OCTET STRING");
+    if (aaguid.length != 16) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID,
+          "packed attestation cert AAGUID extension is not 16 bytes: " + aaguid.length);
+    }
+    return aaguid;
+  }
+
+  /**
+   * Unwraps a single DER {@code OCTET STRING} (tag {@code 0x04}) and returns its contents. Only the
+   * short-form and two-byte long-form length encodings that a 16-byte AAGUID payload requires are
+   * supported; anything else is rejected as malformed.
+   */
+  private static byte[] unwrapDerOctetString(byte[] der, String what)
+      throws Fido2VerificationException {
+    if (der.length < 2 || (der[0] & 0xff) != 0x04) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID, "malformed " + what + " (not an OCTET STRING)");
+    }
+    int lengthByte = der[1] & 0xff;
+    int contentOffset;
+    int contentLength;
+    if (lengthByte < 0x80) {
+      // Short form: the length byte is the content length directly.
+      contentOffset = 2;
+      contentLength = lengthByte;
+    } else if (lengthByte == 0x81) {
+      // Long form, one length octet.
+      if (der.length < 3) {
+        throw new Fido2VerificationException(
+            FailureReason.ATTESTATION_INVALID, "malformed " + what + " (truncated length)");
+      }
+      contentOffset = 3;
+      contentLength = der[2] & 0xff;
+    } else {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID,
+          "malformed " + what + " (unsupported DER length encoding)");
+    }
+    if (contentOffset + contentLength != der.length) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID, "malformed " + what + " (length mismatch)");
+    }
+    return Arrays.copyOfRange(der, contentOffset, contentOffset + contentLength);
   }
 
   /**
