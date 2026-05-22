@@ -60,4 +60,50 @@ class MetadataBlobTest {
     assertThatThrownBy(() -> MetadataBlob.parse("not-a-jws", pki.rootCa()))
         .isInstanceOf(MdsException.class);
   }
+
+  @Test
+  void rejects_blob_with_algorithm_confusion() throws Exception {
+    // An attacker keeps the RSA x5c chain but forges the header alg to HS256, hoping the verifier
+    // treats the RSA public key as an HMAC secret. The verifier must reject this.
+    MdsTestFixtures.Pki pki = MdsTestFixtures.buildPki();
+    String forged =
+        MdsTestFixtures.signBlobWithAlgorithm(
+            SAMPLE_PAYLOAD, pki, com.nimbusds.jose.JWSAlgorithm.HS256);
+    assertThatThrownBy(() -> MetadataBlob.parse(forged, pki.rootCa()))
+        .isInstanceOf(MdsException.class);
+  }
+
+  @Test
+  void rejects_blob_signed_by_non_rsa_certificate() throws Exception {
+    // The BLOB signing leaf has an EC key — MDS BLOBs are RS256-signed, so this must be rejected.
+    MdsTestFixtures.Pki ecPki = MdsTestFixtures.buildEcSigningPki();
+    // Sign with RS256 header but an EC leaf cert — the verifier rejects at the RSA-key check.
+    String jws =
+        MdsTestFixtures.signBlobWithAlgorithm(
+            SAMPLE_PAYLOAD, ecPki, com.nimbusds.jose.JWSAlgorithm.RS256);
+    assertThatThrownBy(() -> MetadataBlob.parse(jws, ecPki.rootCa()))
+        .isInstanceOf(MdsException.class);
+  }
+
+  @Test
+  void rejects_blob_with_no_x5c_header() throws Exception {
+    // A JWS with no x5c header — there is no certificate chain to verify against.
+    MdsTestFixtures.Pki pki = MdsTestFixtures.buildPki();
+    com.nimbusds.jose.JWSObject jws =
+        new com.nimbusds.jose.JWSObject(
+            new com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.RS256).build(),
+            new com.nimbusds.jose.Payload(SAMPLE_PAYLOAD));
+    jws.sign(new com.nimbusds.jose.crypto.RSASSASigner(pki.signingKey()));
+    String noX5c = jws.serialize();
+    assertThatThrownBy(() -> MetadataBlob.parse(noX5c, pki.rootCa()))
+        .isInstanceOf(MdsException.class);
+  }
+
+  @Test
+  void rejects_blob_payload_without_entries_array() throws Exception {
+    MdsTestFixtures.Pki pki = MdsTestFixtures.buildPki();
+    String jws = MdsTestFixtures.signBlob("{\"no\":1,\"nextUpdate\":\"2099-01-01\"}", pki);
+    assertThatThrownBy(() -> MetadataBlob.parse(jws, pki.rootCa()))
+        .isInstanceOf(MdsException.class);
+  }
 }

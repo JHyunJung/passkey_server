@@ -26,6 +26,9 @@ import java.util.UUID;
  * supplied FIDO Alliance root CA via PKIX, then decodes the JSON payload into {@link MetadataEntry}
  * records. JWS parsing/verification uses nimbus-jose-jwt; chain validation uses the JDK's {@code
  * CertPathValidator}. Any failure throws {@link MdsException}.
+ *
+ * <p>Individual malformed entries, and entries without an AAGUID, are skipped — the BLOB remains
+ * usable with its valid entries.
  */
 public final class MetadataBlob {
 
@@ -134,7 +137,18 @@ public final class MetadataBlob {
       List<MetadataEntry> entries = new ArrayList<>();
       CertificateFactory cf = CertificateFactory.getInstance("X.509");
       for (JsonNode entryNode : entriesNode) {
-        entries.add(decodeEntry(entryNode, cf));
+        // A FIDO MDS BLOB carries hundreds of entries; one malformed entry must not invalidate
+        // the whole BLOB. Skip an entry that cannot be decoded, or one without an AAGUID — a
+        // U2F-style entry keyed by attestationCertificateKeyIdentifiers, which the AAGUID-based
+        // strict path (Phase 3) cannot use anyway.
+        try {
+          MetadataEntry entry = decodeEntry(entryNode, cf);
+          if (entry.aaguid() != null) {
+            entries.add(entry);
+          }
+        } catch (RuntimeException e) {
+          // Malformed individual entry — skip it, keep the rest of the BLOB usable.
+        }
       }
       JsonNode nextUpdate = root.get("nextUpdate");
       return new MetadataBlob(
@@ -146,33 +160,38 @@ public final class MetadataBlob {
     }
   }
 
-  private static MetadataEntry decodeEntry(JsonNode entryNode, CertificateFactory cf)
-      throws Exception {
-    JsonNode aaguidNode = entryNode.get("aaguid");
-    UUID aaguid = aaguidNode == null ? null : UUID.fromString(aaguidNode.asText());
+  private static MetadataEntry decodeEntry(JsonNode entryNode, CertificateFactory cf) {
+    try {
+      JsonNode aaguidNode = entryNode.get("aaguid");
+      UUID aaguid = aaguidNode == null ? null : UUID.fromString(aaguidNode.asText());
 
-    List<StatusReport> statuses = new ArrayList<>();
-    JsonNode statusReports = entryNode.get("statusReports");
-    if (statusReports != null && statusReports.isArray()) {
-      for (JsonNode sr : statusReports) {
-        JsonNode status = sr.get("status");
-        if (status != null) {
-          statuses.add(StatusReport.fromMdsString(status.asText()));
+      List<StatusReport> statuses = new ArrayList<>();
+      JsonNode statusReports = entryNode.get("statusReports");
+      if (statusReports != null && statusReports.isArray()) {
+        for (JsonNode sr : statusReports) {
+          JsonNode status = sr.get("status");
+          if (status != null) {
+            statuses.add(StatusReport.fromMdsString(status.asText()));
+          }
         }
       }
-    }
 
-    List<X509Certificate> rootCerts = new ArrayList<>();
-    JsonNode statement = entryNode.get("metadataStatement");
-    if (statement != null) {
-      JsonNode roots = statement.get("attestationRootCertificates");
-      if (roots != null && roots.isArray()) {
-        for (JsonNode certB64 : roots) {
-          byte[] der = java.util.Base64.getDecoder().decode(certB64.asText());
-          rootCerts.add((X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der)));
+      List<X509Certificate> rootCerts = new ArrayList<>();
+      JsonNode statement = entryNode.get("metadataStatement");
+      if (statement != null) {
+        JsonNode roots = statement.get("attestationRootCertificates");
+        if (roots != null && roots.isArray()) {
+          for (JsonNode certB64 : roots) {
+            byte[] der = java.util.Base64.getDecoder().decode(certB64.asText());
+            rootCerts.add((X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der)));
+          }
         }
       }
+      return new MetadataEntry(aaguid, rootCerts, statuses);
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new MdsException("MDS BLOB entry is malformed: " + e.getMessage(), e);
     }
-    return new MetadataEntry(aaguid, rootCerts, statuses);
   }
 }

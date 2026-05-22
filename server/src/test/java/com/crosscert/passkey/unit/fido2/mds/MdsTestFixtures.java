@@ -69,6 +69,43 @@ public final class MdsTestFixtures {
     return jws.serialize();
   }
 
+  /** Sign a BLOB with an explicit JWS algorithm — used to test algorithm-confusion rejection. */
+  public static String signBlobWithAlgorithm(
+      String payloadJson, Pki pki, com.nimbusds.jose.JWSAlgorithm alg) throws Exception {
+    // For a confusion attack the attacker keeps the RSA x5c chain but claims a different alg.
+    // nimbus refuses to build an HS256 JWSObject without an HMAC key, so we hand-craft the
+    // compact serialization with a forged header instead.
+    com.nimbusds.jose.JWSHeader header =
+        new com.nimbusds.jose.JWSHeader.Builder(alg)
+            .type(com.nimbusds.jose.JOSEObjectType.JWT)
+            .x509CertChain(
+                java.util.List.of(
+                    com.nimbusds.jose.util.Base64.encode(pki.signingCert().getEncoded()),
+                    com.nimbusds.jose.util.Base64.encode(pki.rootCa().getEncoded())))
+            .build();
+    String headerB64 = header.toBase64URL().toString();
+    String payloadB64 =
+        com.nimbusds.jose.util.Base64URL.encode(
+                payloadJson.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            .toString();
+    // A bogus signature segment — the point is that the verifier must reject before checking it.
+    return headerB64 + "." + payloadB64 + ".AAAA";
+  }
+
+  /** Build a 2-cert PKI whose signing leaf has an EC (non-RSA) key. */
+  public static Pki buildEcSigningPki() throws Exception {
+    java.security.KeyPairGenerator rsaGen = java.security.KeyPairGenerator.getInstance("RSA");
+    rsaGen.initialize(2048);
+    java.security.KeyPair rootPair = rsaGen.generateKeyPair();
+    java.security.KeyPairGenerator ecGen = java.security.KeyPairGenerator.getInstance("EC");
+    ecGen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+    java.security.KeyPair leafPair = ecGen.generateKeyPair();
+    X509Certificate rootCa = selfSigned(rootPair, "CN=Test FIDO MDS Root", true);
+    X509Certificate signingCert =
+        issued(leafPair, "CN=Test EC Signer", rootPair, "CN=Test FIDO MDS Root", false);
+    return new Pki(rootCa, signingCert, leafPair.getPrivate());
+  }
+
   private static X509Certificate selfSigned(KeyPair pair, String dn, boolean ca) throws Exception {
     return issued(pair, dn, pair, dn, ca);
   }
