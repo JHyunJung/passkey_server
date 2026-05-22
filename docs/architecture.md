@@ -250,7 +250,7 @@ WebAuthn ceremony 파라미터. tenant당 정확히 1개.
 |------|------|------|
 | `tenant_user_id` | uuid | 어느 사용자의 것인지 |
 | `credential_id` | text | base64url-encoded raw credential ID |
-| `public_key_cose` | bytea | **AttestedCredentialData 전체** (AAGUID + credentialId + COSE key). webauthn4j `AttestedCredentialDataConverter`로 직렬화 |
+| `public_key_cose` | bytea | **AttestedCredentialData 전체** (`aaguid(16)` + `credIdLen(2)` + `credentialId` + COSE key). 자체 FIDO2 코어 `RegistrationVerifier`가 직렬화 — 바이트 형식은 기존 webauthn4j `AttestedCredentialDataConverter` 출력과 동일해 마이그레이션 불필요 |
 | `aaguid` | uuid | 인증기 모델 식별자 |
 | `transports` | text | CSV, 예: `internal,hybrid` |
 | `user_handle` | text | base64url-encoded |
@@ -598,7 +598,8 @@ Spring Boot 3.5.0
   ├ Session Redis (spring-session-data-redis) — multi-instance admin sessions
   └ Actuator (health, prometheus)
 
-webauthn4j 0.27.0.RELEASE                ceremony 검증 코어 (+ webauthn4j-metadata: MDS3)
+자체 FIDO2 코어 (`com.crosscert.passkey.fido2`) ceremony 검증 코어 — 인증 + non-strict 등록 (CBOR/COSE/attestation 자체 구현, WebAuthn L3)
+webauthn4j 0.27.0.RELEASE                strict(mdsStrict) 등록 경로만 사용 (+ webauthn4j-metadata: MDS3) — Milestone B에서 제거 예정
 JJWT 0.12.6                              JWT HS256 발급/검증 (legacy verify path)
 nimbus-jose-jwt 9.40                     JWT RS256 서명 (kid 헤더) + JWKS
 Argon2 (de.mkammerer:argon2-jvm 2.11)    API key 시크릿 해시 (ApiKeyProperties로 파라미터 외부화)
@@ -719,7 +720,7 @@ OpenAPI spec은 서버 부팅 후:
 
 ### 10.1 개요
 
-기본 동작은 webauthn4j non-strict — attestation cert chain 검증 안 함, AAGUID allow/deny 정책만으로 약식 통제. 위조 하드웨어 키, compromised authenticator를 직접 차단하지는 못함.
+기본(non-strict) 동작은 자체 FIDO2 코어(`com.crosscert.passkey.fido2`)가 담당 — none / packed self-attestation 검증, attestation cert chain 검증 안 함, AAGUID allow/deny 정책만으로 약식 통제. 위조 하드웨어 키, compromised authenticator를 직접 차단하지는 못함. strict(mdsStrict) 경로는 cert chain + MDS trust anchor 검증이 필요하므로 아직 webauthn4j를 사용한다 (Milestone B에서 자체 코어로 이식 예정).
 
 **MDS3 통합 후** (`passkey.mds.enabled=true` + tenant `mdsStrict=true`):
 - 등록 시 FIDO Alliance가 서명한 metadata BLOB의 trust anchor로 attestation cert chain 검증
@@ -801,3 +802,4 @@ strict on이지만 서버 `passkey.mds.enabled=false`면 해당 tenant의 regist
 | 2026-05-22 | Admin End-user 조회 | Admin 콘솔 tenant 상세에 "Users" 탭 추가 — end-user(`tenant_user`) 목록·검색·상세를 조회 전용으로 제공. 신규 `AdminEndUserController` (`GET /api/v1/admin/tenants/{tenantId}/users` 목록, `.../users/{tenantUserId}` 상세) — `AdminUserSessionController`의 logout-all과 같은 base path를 HTTP 메서드 차이로 공존. `TenantUserRepository.findByTenantIdWithSearch` — `EndUserRow` projection + `Credential` LEFT JOIN 집계로 활성 passkey 개수를 N+1 없이 계산(GROUP BY라 `countQuery` 명시), externalId·displayName case-insensitive 검색. `AuditAggregationService.lastEventForSubject`로 상세의 최근 활동 시각. 프론트: `UsersTab`(검색·페이징 목록), `UserDetailPage`(별도 라우트 `users/:tenantUserId` 상세 — 메타 카드 + passkey 테이블). 권한 `requireTenantAccess` — PLATFORM_OPERATOR + 자기 tenant RP_ADMIN. 테스트: `AdminEndUserControllerSliceTest`(6 케이스 — 목록·검색 전달·상세·cross-tenant 거부·404·RP_ADMIN 거부), `AdminEndUserIntegrationTest`(2 테넌트 시딩 — 활성 passkey 집계·검색·격리·countQuery 정합성). |
 | 2026-05-20 | RP Java SDK (`sdk-java/` 신규) | RP **백엔드**용 Java SDK 신설 — `passkey-rp-sdk-core`(transport·DTO·`NimbusJwtVerifier`), `passkey-rp-spring-boot-starter`(ceremony 프록시 컨트롤러 + `PasskeyJwtAuthenticationFilter` + auto-config), `passkey-rp-sdk-bom`. RP는 starter 의존성만 추가하면 `/passkey/{register,authenticate}/{begin,finish}` ceremony 엔드포인트와 JWT 인증 필터를 거의 무코드로 확보. `examples/passkey-rp-demo`는 in-memory user store 기반 참조 RP 서버. **JWT 검증은 RS256 + JWKS 전용** — `NimbusJwtVerifier`가 `<base-url>/.well-known/jwks.json`에서 공개키를 가져와 로컬 검증(secret 공유 불필요). 문서: `docs/rp-java-sdk.md`. |
 | 2026-05-22 | RS256 JWT 운영 모드 | `passkey.jwt.algorithm`을 `RS256`으로 전환 가능 — RP Java SDK(`NimbusJwtVerifier`)가 RS256/JWKS 전용이므로 RP SDK 통합이 있으면 서버는 RS256 운영 필수. `TokenService`는 cutover 호환을 위해 HS256·RS256 양쪽 검증을 모두 수용, `JwksController`가 `/.well-known/jwks.json`으로 RS256 공개키 노출. local 프로파일(`application-local.yml`)을 RS256 + 데모 RSA 키페어로 기동하도록 변경. 운영 환경변수 `PASSKEY_JWT_ALGORITHM` / `PASSKEY_JWT_RSA_{PRIVATE,PUBLIC}_PEM` / `PASSKEY_JWT_KID`(+ `_PREVIOUS` 회전용) — `docs/deployment.md` "JWT 서명 알고리즘" 참조. |
+| 2026-05-23 | 자체 FIDO2 코어 (Milestone A) | WebAuthn 검증을 webauthn4j에서 자체 구현 FIDO2 코어 `com.crosscert.passkey.fido2`로 단계적 교체 — Milestone A 완료. 신규 패키지: `fido2.cbor`(WebAuthn subset CBOR 디코더 — length 상한·재귀 깊이 제한 DoS 방어), `fido2.cose`(COSE 키 디코딩 + ES256/RS256 서명 검증 — EC 곡선 검증으로 invalid-curve attack 차단, RSA 키 크기 검증), `fido2.model`(`AuthenticatorData`/`AttestedCredentialData`/`CollectedClientData`/`AttestationObject`/`Flags` — fail-closed 파서), `fido2.attestation`(none / packed self-attestation verifier — §8.2 alg 일치 검증), `RegistrationVerifier`/`AuthenticationVerifier`(WebAuthn L3 §7.1/§7.2). 코어는 순수 검증만 — AAGUID 허용·syncable 정책은 호출자(`RegistrationService`)에 잔존. `AuthenticationService.verifyAssertion()`(인증)·`RegistrationService.finishRegistration()` non-strict 경로(등록)가 자체 코어로 동작, strict(mdsStrict) 경로는 webauthn4j 유지 (cert chain + MDS — Milestone B 대상). 두 등록 경로의 결과는 `RegistrationService.AttestationFacts` private record로 통일. `credential.public_key_cose` 직렬화 형식은 webauthn4j `AttestedCredentialDataConverter`와 동일해 마이그레이션 불필요. ArchUnit Rule 7(`fido2_core_is_pure` — fido2 패키지가 Spring·도메인 패키지 의존 금지). 인증·등록 차등 테스트(`AssertionDifferentialTest`/`RegistrationDifferentialTest`)가 자체 코어와 webauthn4j 결과 동등성을 positive·negative 양쪽으로 검증 — webauthn4j 완전 제거(Milestone B) 전까지 안전망. `webauthn4j-core`/`webauthn4j-metadata` 의존성은 strict 경로가 사용하므로 Milestone A에서는 유지. 설계·계획: `docs/superpowers/specs/2026-05-22-fido2-core-self-implementation-design.md`, `docs/superpowers/plans/2026-05-22-fido2-core-self-implementation-milestone-a.md`. |
