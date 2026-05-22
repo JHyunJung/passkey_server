@@ -1,0 +1,28 @@
+package com.crosscert.passkey.fido2.attestation;
+
+import com.crosscert.passkey.fido2.Fido2VerificationException;
+import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
+import com.crosscert.passkey.fido2.model.AttestationObject;
+
+/**
+ * The {@code none} attestation format (WebAuthn L3 §8.7): the authenticator provides no
+ * attestation. The only check is that the attestation statement is empty — a non-empty statement
+ * under {@code fmt=none} is malformed input and is rejected.
+ */
+public final class NoneAttestationVerifier implements AttestationVerifier {
+
+  @Override
+  public String format() {
+    return "none";
+  }
+
+  @Override
+  public AttestationResult verify(AttestationObject attestationObject, byte[] clientDataHash)
+      throws Fido2VerificationException {
+    if (!attestationObject.attestationStatement().isEmpty()) {
+      throw new Fido2VerificationException(
+          FailureReason.ATTESTATION_INVALID, "none attestation must have an empty statement");
+    }
+    return new AttestationResult("none", false);
+  }
+}
