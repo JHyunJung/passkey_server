@@ -278,52 +278,14 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
     if (raw == null) {
       return null; // extension is optional
     }
-    byte[] inner = unwrapDerOctetString(raw, "FIDO AAGUID extension outer OCTET STRING");
-    byte[] aaguid = unwrapDerOctetString(inner, "FIDO AAGUID extension inner OCTET STRING");
+    byte[] inner = DerUtil.unwrapOctetString(raw, "FIDO AAGUID extension outer OCTET STRING");
+    byte[] aaguid = DerUtil.unwrapOctetString(inner, "FIDO AAGUID extension inner OCTET STRING");
     if (aaguid.length != 16) {
       throw new Fido2VerificationException(
           FailureReason.ATTESTATION_INVALID,
           "packed attestation cert AAGUID extension is not 16 bytes: " + aaguid.length);
     }
     return aaguid;
-  }
-
-  /**
-   * Unwraps a single DER {@code OCTET STRING} (tag {@code 0x04}) and returns its contents. Only the
-   * short-form and two-byte long-form length encodings that a 16-byte AAGUID payload requires are
-   * supported; anything else is rejected as malformed.
-   */
-  private static byte[] unwrapDerOctetString(byte[] der, String what)
-      throws Fido2VerificationException {
-    if (der.length < 2 || (der[0] & 0xff) != 0x04) {
-      throw new Fido2VerificationException(
-          FailureReason.ATTESTATION_INVALID, "malformed " + what + " (not an OCTET STRING)");
-    }
-    int lengthByte = der[1] & 0xff;
-    int contentOffset;
-    int contentLength;
-    if (lengthByte < 0x80) {
-      // Short form: the length byte is the content length directly.
-      contentOffset = 2;
-      contentLength = lengthByte;
-    } else if (lengthByte == 0x81) {
-      // Long form, one length octet.
-      if (der.length < 3) {
-        throw new Fido2VerificationException(
-            FailureReason.ATTESTATION_INVALID, "malformed " + what + " (truncated length)");
-      }
-      contentOffset = 3;
-      contentLength = der[2] & 0xff;
-    } else {
-      throw new Fido2VerificationException(
-          FailureReason.ATTESTATION_INVALID,
-          "malformed " + what + " (unsupported DER length encoding)");
-    }
-    if (contentOffset + contentLength != der.length) {
-      throw new Fido2VerificationException(
-          FailureReason.ATTESTATION_INVALID, "malformed " + what + " (length mismatch)");
-    }
-    return Arrays.copyOfRange(der, contentOffset, contentOffset + contentLength);
   }
 
   /**
