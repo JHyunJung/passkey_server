@@ -34,4 +34,37 @@ class CollectedClientDataTest {
     assertThatThrownBy(() -> CollectedClientData.parse("not json".getBytes()))
         .isInstanceOf(CborDecodeException.class);
   }
+
+  @Test
+  void rejects_non_string_type_field() {
+    String json = "{\"type\":{},\"challenge\":\"YWJj\",\"origin\":\"https://a.com\"}";
+    assertThatThrownBy(() -> CollectedClientData.parse(json.getBytes(StandardCharsets.UTF_8)))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_null_origin_field() {
+    String json = "{\"type\":\"webauthn.get\",\"challenge\":\"YWJj\",\"origin\":null}";
+    assertThatThrownBy(() -> CollectedClientData.parse(json.getBytes(StandardCharsets.UTF_8)))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_non_boolean_cross_origin() {
+    String json =
+        "{\"type\":\"webauthn.get\",\"challenge\":\"YWJj\",\"origin\":\"https://a.com\","
+            + "\"crossOrigin\":\"yes\"}";
+    assertThatThrownBy(() -> CollectedClientData.parse(json.getBytes(StandardCharsets.UTF_8)))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_oversized_client_data_json() {
+    StringBuilder sb = new StringBuilder("{\"type\":\"webauthn.get\",\"challenge\":\"");
+    sb.append("A".repeat(9000));
+    sb.append("\",\"origin\":\"https://a.com\"}");
+    assertThatThrownBy(
+            () -> CollectedClientData.parse(sb.toString().getBytes(StandardCharsets.UTF_8)))
+        .isInstanceOf(CborDecodeException.class);
+  }
 }
