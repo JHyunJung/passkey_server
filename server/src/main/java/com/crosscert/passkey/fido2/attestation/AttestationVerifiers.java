@@ -5,16 +5,17 @@ import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
 import java.util.Map;
 
 /**
- * Dispatches an attestation {@code fmt} string to its {@link AttestationVerifier}. Milestone A
- * registers {@code none} and {@code packed} (self + full, non-strict); any other format throws
- * {@code UNSUPPORTED_ATTESTATION_FORMAT} (fail-closed) until Milestone B adds it.
+ * Dispatches an attestation {@code fmt} string to its {@link AttestationVerifier}. Registers {@code
+ * none}, {@code packed}, and {@code apple} ({@code android-key} is added in Task 7); any other
+ * format throws {@code UNSUPPORTED_ATTESTATION_FORMAT} (fail-closed).
  */
 public final class AttestationVerifiers {
 
   private static final Map<String, AttestationVerifier> REGISTRY =
       Map.of(
           "none", new NoneAttestationVerifier(),
-          "packed", new PackedAttestationVerifier());
+          "packed", new PackedAttestationVerifier(),
+          "apple", new AppleAnonymousAttestationVerifier());
 
   private AttestationVerifiers() {}
 

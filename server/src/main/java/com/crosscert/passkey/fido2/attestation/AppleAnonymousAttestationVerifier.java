@@ -13,7 +13,6 @@ import java.security.MessageDigest;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -78,18 +77,21 @@ public final class AppleAnonymousAttestationVerifier implements AttestationVerif
       nonceInput.writeBytes(clientDataHash);
       byte[] expectedNonce = MessageDigest.getInstance("SHA-256").digest(nonceInput.toByteArray());
 
-      // 2. nonce from the Apple certificate extension must equal the expected nonce.
+      // 2. nonce from the Apple certificate extension must equal the expected nonce. Use the
+      // constant-time MessageDigest.isEqual for policy consistency — timing leakage on a SHA-256
+      // hash is not informative, but matching the rest of the verifier surface.
       byte[] certNonce = appleNonceFromExtension(cert);
-      if (!Arrays.equals(certNonce, expectedNonce)) {
+      if (!MessageDigest.isEqual(certNonce, expectedNonce)) {
         throw new Fido2VerificationException(
             FailureReason.ATTESTATION_INVALID,
             "apple attestation nonce does not match authenticatorData||clientDataHash");
       }
 
-      // 3. the certificate public key must equal the credential public key.
-      byte[] certPublicKey = cert.getPublicKey().getEncoded();
-      byte[] credentialPublicKey = acd.coseKey().publicKey().getEncoded();
-      if (!Arrays.equals(certPublicKey, credentialPublicKey)) {
+      // 3. The certificate public key must equal the credential public key. JCA PublicKey.equals
+      // compares algorithm-specific key material (EC: W + curve params, RSA: modulus + exponent),
+      // not the SubjectPublicKeyInfo byte encoding — robust to encoding variants like named curve
+      // vs explicit parameters or compressed vs uncompressed EC points.
+      if (!cert.getPublicKey().equals(acd.coseKey().publicKey())) {
         throw new Fido2VerificationException(
             FailureReason.ATTESTATION_INVALID,
             "apple attestation cert public key does not match credential public key");
