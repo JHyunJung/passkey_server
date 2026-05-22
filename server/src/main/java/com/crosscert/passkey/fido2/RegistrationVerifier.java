@@ -87,7 +87,8 @@ public final class RegistrationVerifier {
         authData.flags().userVerified(),
         authData.flags().backupEligible(),
         authData.flags().backupState(),
-        attestation.format());
+        attestation.format(),
+        clientData.crossOrigin());
   }
 
   /**

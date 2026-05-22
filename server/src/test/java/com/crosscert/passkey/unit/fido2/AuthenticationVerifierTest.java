@@ -182,6 +182,50 @@ class AuthenticationVerifierTest {
         .isInstanceOf(Fido2VerificationException.class);
   }
 
+  @Test
+  void crossOrigin_true_in_client_data_is_exposed_in_result() throws Exception {
+    // clientDataJSON with crossOrigin:true — core surfaces the value, caller decides policy.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    // Rebuild clientDataJson to include "crossOrigin":true.
+    String challengeB64 = B64URL.encodeToString(f.challenge);
+    String json =
+        "{\"type\":\"webauthn.get\",\"challenge\":\""
+            + challengeB64
+            + "\",\"origin\":\"https://example.com\",\"crossOrigin\":true}";
+    byte[] crossOriginClientData = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    // Re-sign with new clientDataJson.
+    byte[] clientHash =
+        java.security.MessageDigest.getInstance("SHA-256").digest(crossOriginClientData);
+    java.io.ByteArrayOutputStream signed = new java.io.ByteArrayOutputStream();
+    signed.writeBytes(f.authData);
+    signed.writeBytes(clientHash);
+    java.security.Signature signer = java.security.Signature.getInstance("SHA256withECDSA");
+    signer.initSign(f.keyPair.getPrivate());
+    signer.update(signed.toByteArray());
+    byte[] sig = signer.sign();
+
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            f.authData,
+            crossOriginClientData,
+            sig,
+            f.challenge,
+            java.util.List.of("https://example.com"),
+            f.rpId,
+            f.coseKey,
+            false);
+    AuthenticationVerificationResult result = new AuthenticationVerifier().verify(req);
+    assertThat(result.crossOrigin()).isTrue();
+  }
+
+  @Test
+  void crossOrigin_absent_defaults_to_false() throws Exception {
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationResult result = new AuthenticationVerifier().verify(f.request(true));
+    assertThat(result.crossOrigin()).isFalse();
+  }
+
   /** Builds a self-consistent assertion: real EC key, real signature over authData||clientHash. */
   private static final class Fixture {
     final KeyPair keyPair;

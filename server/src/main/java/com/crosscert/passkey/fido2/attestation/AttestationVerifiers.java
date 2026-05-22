@@ -6,15 +6,15 @@ import java.util.Map;
 
 /**
  * Dispatches an attestation {@code fmt} string to its {@link AttestationVerifier}. Milestone A
- * registers {@code none} and {@code packed}; any other format throws {@code
- * UNSUPPORTED_ATTESTATION_FORMAT} (fail-closed) until Milestone B adds it.
+ * registers {@code none} and {@code packed} (self + full, non-strict); any other format throws
+ * {@code UNSUPPORTED_ATTESTATION_FORMAT} (fail-closed) until Milestone B adds it.
  */
 public final class AttestationVerifiers {
 
   private static final Map<String, AttestationVerifier> REGISTRY =
       Map.of(
           "none", new NoneAttestationVerifier(),
-          "packed", new PackedSelfAttestationVerifier());
+          "packed", new PackedAttestationVerifier());
 
   private AttestationVerifiers() {}
 

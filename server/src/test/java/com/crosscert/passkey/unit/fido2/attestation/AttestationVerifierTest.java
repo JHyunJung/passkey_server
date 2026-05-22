@@ -10,9 +10,26 @@ import com.crosscert.passkey.fido2.attestation.AttestationVerifiers;
 import com.crosscert.passkey.fido2.model.AttestationObject;
 import com.crosscert.passkey.unit.fido2.CborTestEncoder;
 import java.io.ByteArrayOutputStream;
+import java.math.BigInteger;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.cert.X509Certificate;
+import java.security.interfaces.ECPublicKey;
+import java.security.spec.ECGenParameterSpec;
+import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import sun.security.x509.AlgorithmId;
+import sun.security.x509.CertificateAlgorithmId;
+import sun.security.x509.CertificateSerialNumber;
+import sun.security.x509.CertificateValidity;
+import sun.security.x509.CertificateVersion;
+import sun.security.x509.CertificateX509Key;
+import sun.security.x509.X500Name;
+import sun.security.x509.X509CertImpl;
+import sun.security.x509.X509CertInfo;
 
 class AttestationVerifierTest {
 
@@ -65,17 +82,118 @@ class AttestationVerifierTest {
   }
 
   @Test
-  void packed_with_x5c_is_rejected_as_unsupported() throws Exception {
-    // x5c가 있으면 full attestation — Milestone A 미지원.
+  void verifies_packed_full_attestation_with_x5c() throws Exception {
+    // x5c full attestation: attestation cert의 개인키로 서명, cert chain trust는 검증 안 함(non-strict).
+    byte[] clientDataHash = new byte[32];
+
+    // Generate an EC keypair and self-signed cert for the attestation statement.
+    KeyPairGenerator gen = KeyPairGenerator.getInstance("EC");
+    gen.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair attPair = gen.generateKeyPair();
+    X509Certificate attCert = selfSignedCert(attPair, "CN=Attestation Test");
+
+    // Credential keypair (separate from attestation keypair — full attestation uses cert key).
+    gen.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair credPair = gen.generateKeyPair();
+    ECPublicKey credPub = (ECPublicKey) credPair.getPublic();
+
+    Map<Object, Object> coseMap = new LinkedHashMap<>();
+    coseMap.put(1L, 2L);
+    coseMap.put(3L, -7L);
+    coseMap.put(-1L, 1L);
+    coseMap.put(-2L, coordinate(credPub.getW().getAffineX()));
+    coseMap.put(-3L, coordinate(credPub.getW().getAffineY()));
+    byte[] cose = CborTestEncoder.encodeMap(coseMap);
+
+    ByteArrayOutputStream authData = new ByteArrayOutputStream();
+    authData.writeBytes(new byte[32]); // rpIdHash
+    authData.write(0x41); // UP | AT
+    authData.writeBytes(new byte[] {0, 0, 0, 0}); // signCount
+    authData.writeBytes(new byte[16]); // aaguid
+    authData.writeBytes(new byte[] {0, 2}); // credIdLen
+    authData.writeBytes(new byte[] {1, 2}); // credId
+    authData.writeBytes(cose);
+    byte[] authDataBytes = authData.toByteArray();
+
+    ByteArrayOutputStream signed = new ByteArrayOutputStream();
+    signed.writeBytes(authDataBytes);
+    signed.writeBytes(clientDataHash);
+
+    // Sign with the attestation cert's private key (not the credential key).
+    java.security.Signature signer = java.security.Signature.getInstance("SHA256withECDSA");
+    signer.initSign(attPair.getPrivate());
+    signer.update(signed.toByteArray());
+    byte[] sig = signer.sign();
+
     Map<Object, Object> attStmt = new LinkedHashMap<>();
     attStmt.put("alg", -7L);
-    attStmt.put("sig", new byte[] {1, 2, 3});
-    attStmt.put("x5c", java.util.List.of(new byte[] {0x30}));
-    AttestationObject obj = AttestationObject.parse(attestationObject("packed", attStmt));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, new byte[32]))
+    attStmt.put("sig", sig);
+    attStmt.put("x5c", List.of(attCert.getEncoded())); // DER-encoded cert
+
+    Map<Object, Object> obj = new LinkedHashMap<>();
+    obj.put("fmt", "packed");
+    obj.put("attStmt", attStmt);
+    obj.put("authData", authDataBytes);
+    AttestationObject attestationObject = AttestationObject.parse(CborTestEncoder.encodeMap(obj));
+
+    AttestationResult result =
+        AttestationVerifiers.forFormat("packed").verify(attestationObject, clientDataHash);
+    assertThat(result.format()).isEqualTo("packed");
+    assertThat(result.trustPathPresent()).isTrue();
+  }
+
+  @Test
+  void packed_x5c_with_invalid_signature_is_rejected() throws Exception {
+    // x5c full attestation with a bad signature — must be rejected.
+    byte[] clientDataHash = new byte[32];
+
+    KeyPairGenerator gen = KeyPairGenerator.getInstance("EC");
+    gen.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair attPair = gen.generateKeyPair();
+    X509Certificate attCert = selfSignedCert(attPair, "CN=Attestation Test");
+
+    gen.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair credPair = gen.generateKeyPair();
+    ECPublicKey credPub = (ECPublicKey) credPair.getPublic();
+
+    Map<Object, Object> coseMap = new LinkedHashMap<>();
+    coseMap.put(1L, 2L);
+    coseMap.put(3L, -7L);
+    coseMap.put(-1L, 1L);
+    coseMap.put(-2L, coordinate(credPub.getW().getAffineX()));
+    coseMap.put(-3L, coordinate(credPub.getW().getAffineY()));
+    byte[] cose = CborTestEncoder.encodeMap(coseMap);
+
+    ByteArrayOutputStream authData = new ByteArrayOutputStream();
+    authData.writeBytes(new byte[32]);
+    authData.write(0x41);
+    authData.writeBytes(new byte[] {0, 0, 0, 0});
+    authData.writeBytes(new byte[16]);
+    authData.writeBytes(new byte[] {0, 2});
+    authData.writeBytes(new byte[] {1, 2});
+    authData.writeBytes(cose);
+    byte[] authDataBytes = authData.toByteArray();
+
+    // Use garbage bytes as signature.
+    byte[] badSig = "notasignature".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    Map<Object, Object> attStmt = new LinkedHashMap<>();
+    attStmt.put("alg", -7L);
+    attStmt.put("sig", badSig);
+    attStmt.put("x5c", List.of(attCert.getEncoded()));
+
+    Map<Object, Object> obj = new LinkedHashMap<>();
+    obj.put("fmt", "packed");
+    obj.put("attStmt", attStmt);
+    obj.put("authData", authDataBytes);
+    AttestationObject attestationObject = AttestationObject.parse(CborTestEncoder.encodeMap(obj));
+
+    assertThatThrownBy(
+            () ->
+                AttestationVerifiers.forFormat("packed").verify(attestationObject, clientDataHash))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
-        .isEqualTo(FailureReason.UNSUPPORTED_ATTESTATION_FORMAT);
+        .isEqualTo(FailureReason.ATTESTATION_INVALID);
   }
 
   @Test
@@ -214,5 +332,29 @@ class AttestationVerifierTest {
       System.arraycopy(raw, 0, out, 32 - raw.length, raw.length);
     }
     return out;
+  }
+
+  /**
+   * Generates a self-signed X.509 certificate for the given key pair using the {@code
+   * sun.security.x509} internal API (accessible in tests via {@code --add-exports}). Not for
+   * production use — only to build attestation fixtures in unit tests.
+   */
+  @SuppressWarnings("restriction")
+  private static X509Certificate selfSignedCert(KeyPair keyPair, String dn) throws Exception {
+    X509CertInfo info = new X509CertInfo();
+    Date from = new Date();
+    Date to = new Date(from.getTime() + 365L * 24 * 60 * 60 * 1000);
+    info.set(X509CertInfo.VALIDITY, new CertificateValidity(from, to));
+    info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(new BigInteger("12345")));
+    info.set(X509CertInfo.SUBJECT, new X500Name(dn));
+    info.set(X509CertInfo.ISSUER, new X500Name(dn));
+    info.set(X509CertInfo.KEY, new CertificateX509Key(keyPair.getPublic()));
+    info.set(X509CertInfo.VERSION, new CertificateVersion(CertificateVersion.V3));
+    AlgorithmId algo = AlgorithmId.get("SHA256withECDSA");
+    info.set(X509CertInfo.ALGORITHM_ID, new CertificateAlgorithmId(algo));
+
+    X509CertImpl cert = new X509CertImpl(info);
+    cert.sign(keyPair.getPrivate(), "SHA256withECDSA");
+    return cert;
   }
 }

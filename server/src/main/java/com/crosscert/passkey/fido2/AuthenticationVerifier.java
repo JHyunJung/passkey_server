@@ -69,7 +69,8 @@ public final class AuthenticationVerifier {
         authData.signCount(),
         authData.flags().userVerified(),
         authData.flags().backupEligible(),
-        authData.flags().backupState());
+        authData.flags().backupState(),
+        clientData.crossOrigin());
   }
 
   private void verifySignature(AuthenticationVerificationRequest req, AuthenticatorData authData)

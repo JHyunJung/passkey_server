@@ -204,6 +204,51 @@ class RegistrationVerifierTest {
   }
 
   @Test
+  void crossOrigin_true_in_client_data_is_exposed_in_result() throws Exception {
+    // clientDataJSON with crossOrigin:true — core surfaces the value, caller decides policy.
+    Fido2Fixtures.Registration r =
+        Fido2Fixtures.validRegistration("none", "https://example.com", "example.com");
+    // Rebuild clientDataJson to include "crossOrigin":true.
+    byte[] challenge = r.challenge();
+    String challengeB64 =
+        java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(challenge);
+    String json =
+        "{\"type\":\"webauthn.create\",\"challenge\":\""
+            + challengeB64
+            + "\",\"origin\":\"https://example.com\",\"crossOrigin\":true}";
+    byte[] crossOriginClientData = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    RegistrationVerificationResult result =
+        new RegistrationVerifier()
+            .verify(
+                new RegistrationVerificationRequest(
+                    r.attestationObject(),
+                    crossOriginClientData,
+                    challenge,
+                    java.util.List.of("https://example.com"),
+                    "example.com",
+                    false));
+    assertThat(result.crossOrigin()).isTrue();
+  }
+
+  @Test
+  void crossOrigin_absent_defaults_to_false() throws Exception {
+    Fido2Fixtures.Registration r =
+        Fido2Fixtures.validRegistration("none", "https://example.com", "example.com");
+    RegistrationVerificationResult result =
+        new RegistrationVerifier()
+            .verify(
+                new RegistrationVerificationRequest(
+                    r.attestationObject(),
+                    r.clientDataJson(),
+                    r.challenge(),
+                    java.util.List.of("https://example.com"),
+                    "example.com",
+                    false));
+    assertThat(result.crossOrigin()).isFalse();
+  }
+
+  @Test
   void attested_credential_data_round_trips_through_parse() throws Exception {
     // RegistrationVerifier가 직렬화한 attestedCredentialData를 AttestedCredentialData.parse()로
     // 되읽어 aaguid/credentialId가 일치하는지 — 직렬화 형식이 load-bearing이므로 회귀 방어.
