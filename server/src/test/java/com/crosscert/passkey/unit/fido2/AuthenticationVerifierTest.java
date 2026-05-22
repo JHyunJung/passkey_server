@@ -73,6 +73,104 @@ class AuthenticationVerifierTest {
         .isEqualTo(FailureReason.SIGNATURE_INVALID);
   }
 
+  @Test
+  void rejects_missing_up_flag() throws Exception {
+    // up=false — user-presence 플래그 미설정.
+    Fixture f = new Fixture("https://example.com", "example.com", false, true);
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(f.request(true)))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.UP_FLAG_MISSING);
+  }
+
+  @Test
+  void rejects_rp_id_hash_mismatch() throws Exception {
+    // fixture는 rpId "example.com"으로 rpIdHash를 만들지만, 요청의 expectedRpId는 다른 값.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            base.authenticatorData(),
+            base.clientDataJson(),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            "other-rp.com",
+            base.storedCoseKeyBytes(),
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.RPID_HASH_MISMATCH);
+  }
+
+  @Test
+  void rejects_wrong_ceremony_type() throws Exception {
+    // clientDataJson의 type이 webauthn.create — 인증이 아닌 등록 type.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    String wrongTypeJson =
+        "{\"type\":\"webauthn.create\",\"challenge\":\""
+            + B64URL.encodeToString("Y2hhbGxlbmdl".getBytes())
+            + "\",\"origin\":\"https://example.com\"}";
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            base.authenticatorData(),
+            wrongTypeJson.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            base.expectedRpId(),
+            base.storedCoseKeyBytes(),
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.WRONG_CEREMONY_TYPE);
+  }
+
+  @Test
+  void rejects_malformed_authenticator_data() throws Exception {
+    // 37바이트 미만의 authenticatorData.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            new byte[10],
+            base.clientDataJson(),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            base.expectedRpId(),
+            base.storedCoseKeyBytes(),
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.MALFORMED_CBOR);
+  }
+
+  @Test
+  void rejects_corrupted_stored_cose_key() throws Exception {
+    // storedCoseKeyBytes가 손상된 바이트 — AttestedCredentialData.parse() 실패.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            base.authenticatorData(),
+            base.clientDataJson(),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            base.expectedRpId(),
+            new byte[] {1, 2, 3}, // 손상 — 18바이트 헤더 미만
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.MALFORMED_CBOR);
+  }
+
   /** Builds a self-consistent assertion: real EC key, real signature over authData||clientHash. */
   private static final class Fixture {
     final KeyPair keyPair;

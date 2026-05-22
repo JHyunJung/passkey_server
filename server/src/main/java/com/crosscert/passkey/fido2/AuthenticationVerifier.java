@@ -63,21 +63,23 @@ public final class AuthenticationVerifier {
 
   private void verifySignature(AuthenticationVerificationRequest req, AuthenticatorData authData)
       throws Fido2VerificationException {
-    CoseKey key;
+    boolean signatureValid;
     try {
       // storedCoseKeyBytes is the webauthn4j AttestedCredentialData blob; pull the COSE key out.
       AttestedCredentialData stored = AttestedCredentialData.parse(req.storedCoseKeyBytes());
-      key = stored.coseKey();
+      CoseKey key = stored.coseKey();
+      byte[] clientDataHash = sha256(req.clientDataJson());
+      ByteArrayOutputStream signedData = new ByteArrayOutputStream();
+      signedData.writeBytes(authData.rawBytes());
+      signedData.writeBytes(clientDataHash);
+      signatureValid = CoseSignatureVerifier.verify(key, signedData.toByteArray(), req.signature());
     } catch (CborDecodeException | CoseException e) {
+      // The stored credential key could not be read, or the JCA verifier could not run. Either
+      // way the assertion cannot be trusted — fail closed rather than leaking a RuntimeException.
       throw new Fido2VerificationException(
-          FailureReason.UNSUPPORTED_ALGORITHM,
-          "stored credential key unreadable: " + e.getMessage());
+          FailureReason.MALFORMED_CBOR, "stored credential key unreadable: " + e.getMessage());
     }
-    byte[] clientDataHash = sha256(req.clientDataJson());
-    ByteArrayOutputStream signedData = new ByteArrayOutputStream();
-    signedData.writeBytes(authData.rawBytes());
-    signedData.writeBytes(clientDataHash);
-    if (!CoseSignatureVerifier.verify(key, signedData.toByteArray(), req.signature())) {
+    if (!signatureValid) {
       throw new Fido2VerificationException(
           FailureReason.SIGNATURE_INVALID, "assertion signature verification failed");
     }
