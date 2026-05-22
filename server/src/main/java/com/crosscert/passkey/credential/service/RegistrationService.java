@@ -377,19 +377,14 @@ public class RegistrationService {
         result.backupState());
   }
 
-  /** Decode a 16-byte AAGUID into a {@link UUID}; an all-zero AAGUID maps to {@code null}. */
+  /**
+   * Decode a 16-byte AAGUID into a {@link UUID}. An all-zero AAGUID maps to the zero UUID {@code
+   * 00000000-0000-0000-0000-000000000000} — the same representation webauthn4j's {@code
+   * AAGUID.getValue()} produces, so the non-strict and strict registration paths store an identical
+   * value for an authenticator that does not report an AAGUID.
+   */
   private static UUID bytesToUuid(byte[] aaguid) {
     if (aaguid == null || aaguid.length != 16) {
-      return null;
-    }
-    boolean allZero = true;
-    for (byte b : aaguid) {
-      if (b != 0) {
-        allZero = false;
-        break;
-      }
-    }
-    if (allZero) {
       return null;
     }
     java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(aaguid);
