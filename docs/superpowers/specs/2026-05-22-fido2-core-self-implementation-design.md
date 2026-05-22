@@ -18,13 +18,13 @@ WebAuthn 검증을 외부 라이브러리 `webauthn4j`에 의존하지 않고 [W
 ### Milestone A (1차 목표)
 - Phase 0: 코어 빌딩블록 (CBOR/COSE/model)
 - Phase 1: 인증(assertion) 경로 자체 코어 교체
-- Phase 2: 등록(none / packed-self attestation) 경로 자체 코어 교체
-- 완료 시 `webauthn4j-core` 의존성 제거
+- Phase 2: 등록 non-strict(none / packed-self attestation) 경로 자체 코어 교체
+- 등록 strict(mdsStrict) 경로는 webauthn4j 유지. webauthn4j 의존성은 strict 경로가 계속 사용하므로 Milestone A에서는 제거하지 않는다.
 
 ### Milestone B (후속)
 - Phase 3: packed-full / apple / android-key attestation + X.509 cert path 검증
-- Phase 4: TPM / android-safetynet / U2F attestation + FIDO MDS3 BLOB 파싱·trust anchor
-- 완료 시 `webauthn4j-metadata` 의존성 제거
+- Phase 4: TPM / android-safetynet / U2F attestation + FIDO MDS3 BLOB 파싱·trust anchor → strict 경로 자체 코어 교체
+- 완료 시 `webauthn4j-core`·`webauthn4j-metadata` 의존성 완전 제거
 
 ### 범위 외 (YAGNI)
 - 별도 npm/Maven 패키지 출시 — 동일 모듈 내 패키지 분리로 충분
@@ -189,12 +189,13 @@ RegistrationService.finishRegistration(req)
 ## 9. 완료 기준
 
 ### Milestone A
-- `webauthn4j-core` 의존성 제거
-- 인증 + none/packed-self 등록이 자체 코어로 동작
-- `webauthn4j-metadata`는 잔존 (MDS는 Milestone B) → `WebAuthnConfig`의 strict 매니저, `credential/metadata/*`는 유지
+- 인증(assertion) 경로가 자체 코어로 동작
+- 등록 non-strict(none/packed-self) 경로가 자체 코어로 동작
+- 등록 strict(mdsStrict) 경로는 webauthn4j 유지 — Milestone B 대상
+- `webauthn4j-core`·`webauthn4j-metadata` 의존성 잔존: strict 경로의 `WebAuthnConfig.strictWebAuthnManager`가 `webauthn4j-core`의 `WebAuthnManager`·attestation verifier에 의존하므로 Milestone A에서는 제거할 수 없다. `credential/metadata/*`도 유지.
 - `./gradlew check` 통과, 차등 테스트 통과, ArchUnit 경계 룰 통과
 
 ### Milestone B
-- `webauthn4j-metadata` 의존성 제거
-- 전체 attestation 포맷 + MDS3 자체 코어 동작
+- 전체 attestation 포맷 + MDS3 자체 코어 동작 → strict 경로 자체 코어 교체
+- `webauthn4j-core`·`webauthn4j-metadata` 의존성 완전 제거
 - `WebAuthnConfig`·`credential/metadata/*` 정리, `docs/architecture.md` §10 변경 이력 갱신
