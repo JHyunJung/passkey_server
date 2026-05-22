@@ -47,6 +47,14 @@ public final class PackedSelfAttestationVerifier implements AttestationVerifier 
     boolean signatureValid;
     try {
       CoseKey credentialKey = acd.coseKey();
+      // WebAuthn L3 §8.2: the attestation statement's alg must equal the credential public
+      // key's algorithm — a self-attestation signs with the credential key itself.
+      Object alg = attStmt.get("alg");
+      if (!(alg instanceof Long algValue) || algValue != credentialKey.algorithm()) {
+        throw new Fido2VerificationException(
+            FailureReason.ATTESTATION_INVALID,
+            "packed self-attestation alg does not match credential public key alg");
+      }
       ByteArrayOutputStream signedData = new ByteArrayOutputStream();
       signedData.writeBytes(attestationObject.authenticatorData().rawBytes());
       signedData.writeBytes(clientDataHash);
