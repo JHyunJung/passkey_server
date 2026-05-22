@@ -20,7 +20,11 @@ import java.util.Arrays;
  */
 public record AttestedCredentialData(byte[] aaguid, byte[] credentialId, byte[] coseKeyBytes) {
 
-  /** The credential public key parsed from {@link #coseKeyBytes()}. */
+  /**
+   * The credential public key parsed from {@link #coseKeyBytes()}. Parsing and curve validation
+   * happen on each call. Throws {@code com.crosscert.passkey.fido2.cose.CoseException} if the
+   * stored bytes are not a valid or supported COSE_Key.
+   */
   public CoseKey coseKey() {
     return CoseKey.parse(coseKeyBytes);
   }
@@ -31,6 +35,9 @@ public record AttestedCredentialData(byte[] aaguid, byte[] credentialId, byte[] 
    */
   public static AttestedCredentialData parse(byte[] data) {
     Parsed p = parseWithLength(data, 0);
+    if (p.endOffset() != data.length) {
+      throw new CborDecodeException("trailing bytes after attested credential data");
+    }
     return p.value();
   }
 
@@ -40,15 +47,16 @@ public record AttestedCredentialData(byte[] aaguid, byte[] credentialId, byte[] 
    * can continue parsing.
    */
   public static Parsed parseWithLength(byte[] data, int offset) {
-    if (data.length < offset + 18) {
+    if (offset < 0 || (long) offset + 18 > data.length) {
       throw new CborDecodeException("attested credential data truncated");
     }
     byte[] aaguid = Arrays.copyOfRange(data, offset, offset + 16);
     int credIdLen = ((data[offset + 16] & 0xff) << 8) | (data[offset + 17] & 0xff);
-    int credIdEnd = offset + 18 + credIdLen;
-    if (data.length < credIdEnd) {
+    long credIdEndLong = (long) offset + 18 + credIdLen;
+    if (credIdEndLong > data.length) {
       throw new CborDecodeException("attested credential data credentialId truncated");
     }
+    int credIdEnd = (int) credIdEndLong;
     byte[] credentialId = Arrays.copyOfRange(data, offset + 18, credIdEnd);
     // The COSE_Key is the next CBOR item; decodeWithLength tells us where it ends.
     byte[] rest = Arrays.copyOfRange(data, credIdEnd, data.length);

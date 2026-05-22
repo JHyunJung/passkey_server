@@ -7,6 +7,9 @@ import java.util.Arrays;
  * Parsed WebAuthn authenticator data (WebAuthn L3 §6.1): the SHA-256 of the RP id, the {@link
  * Flags} byte, a 32-bit signature counter, and — when the AT flag is set — the embedded {@link
  * AttestedCredentialData}. Extension data, when present, is not interpreted in Milestone A.
+ *
+ * <p>The byte-array components ({@code rpIdHash}, {@code rawBytes}) are not defensively copied;
+ * {@code rawBytes} in particular is the signed payload, so callers must not mutate it.
  */
 public record AuthenticatorData(
     byte[] rpIdHash,

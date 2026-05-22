@@ -80,6 +80,48 @@ class AuthenticatorDataTest {
         .isInstanceOf(CborDecodeException.class);
   }
 
+  @Test
+  void rejects_attested_credential_with_oversized_cred_id_length() {
+    // credIdLen 헤더는 큰 값을 주장하지만 실제 buffer는 짧다.
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    out.writeBytes(new byte[16]); // aaguid
+    out.writeBytes(new byte[] {(byte) 0xff, (byte) 0xff}); // credIdLen = 65535
+    out.writeBytes(new byte[] {1, 2, 3}); // 실제로는 3바이트뿐
+    assertThatThrownBy(() -> AttestedCredentialData.parse(out.toByteArray()))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_trailing_bytes_after_attested_credential() {
+    byte[] coseKey = sampleCoseKey();
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    out.writeBytes(new byte[16]); // aaguid
+    out.writeBytes(new byte[] {0, 3}); // credIdLen = 3
+    out.writeBytes(new byte[] {9, 8, 7}); // credId
+    out.writeBytes(coseKey);
+    out.writeBytes(new byte[] {0x42, 0x42}); // 쓰레기 trailing 바이트
+    assertThatThrownBy(() -> AttestedCredentialData.parse(out.toByteArray()))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_empty_attested_credential_data() {
+    assertThatThrownBy(() -> AttestedCredentialData.parse(new byte[0]))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
+  @Test
+  void rejects_authenticator_data_with_at_flag_but_truncated_attested_credential() {
+    // 37바이트 헤더 + AT 비트는 섰지만 attested credential data가 잘림.
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    out.writeBytes(new byte[32]); // rpIdHash
+    out.write(0x41); // UP | AT
+    out.writeBytes(new byte[] {0, 0, 0, 0}); // signCount
+    out.writeBytes(new byte[] {1, 2, 3}); // aaguid 18바이트 미만 — 잘림
+    assertThatThrownBy(() -> AuthenticatorData.parse(out.toByteArray()))
+        .isInstanceOf(CborDecodeException.class);
+  }
+
   private static byte[] sampleCoseKey() {
     // A real, on-curve ES256 COSE_Key — CoseKey.parse() validates the point lies on P-256.
     try {
