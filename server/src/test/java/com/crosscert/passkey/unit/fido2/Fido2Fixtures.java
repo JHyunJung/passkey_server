@@ -39,7 +39,7 @@ public final class Fido2Fixtures {
    */
   public static Registration validRegistration(String fmt, String origin, String rpId)
       throws Exception {
-    return buildRegistration(fmt, "webauthn.create", origin, rpId);
+    return buildRegistration(fmt, "webauthn.create", 0x45, origin, rpId);
   }
 
   /**
@@ -48,11 +48,20 @@ public final class Fido2Fixtures {
    */
   public static Registration registrationWithClientType(String type, String origin, String rpId)
       throws Exception {
-    return buildRegistration("none", type, origin, rpId);
+    return buildRegistration("none", type, 0x45, origin, rpId);
+  }
+
+  /**
+   * Build a registration ceremony whose authenticator-data flags byte is set explicitly. Use to
+   * exercise UP/UV/AT rejection paths. Attestation format is "none".
+   */
+  public static Registration registrationWithFlags(int flags, String origin, String rpId)
+      throws Exception {
+    return buildRegistration("none", "webauthn.create", flags, origin, rpId);
   }
 
   private static Registration buildRegistration(
-      String fmt, String clientType, String origin, String rpId) throws Exception {
+      String fmt, String clientType, int flags, String origin, String rpId) throws Exception {
     // 1. Fixed challenge bytes.
     byte[] challenge = "Y2hhbGxlbmdl".getBytes(StandardCharsets.UTF_8);
 
@@ -80,7 +89,7 @@ public final class Fido2Fixtures {
 
     ByteArrayOutputStream authDataOut = new ByteArrayOutputStream();
     authDataOut.writeBytes(rpIdHash); // 32 bytes
-    authDataOut.write(0x45); // UP(0x01) | UV(0x04) | AT(0x40) = 0x45
+    authDataOut.write(flags & 0xff); // e.g. UP(0x01) | UV(0x04) | AT(0x40) = 0x45
     authDataOut.write((int) ((signCount >> 24) & 0xff));
     authDataOut.write((int) ((signCount >> 16) & 0xff));
     authDataOut.write((int) ((signCount >> 8) & 0xff));

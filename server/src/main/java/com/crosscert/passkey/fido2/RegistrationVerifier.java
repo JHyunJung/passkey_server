@@ -3,7 +3,6 @@ package com.crosscert.passkey.fido2;
 import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
 import com.crosscert.passkey.fido2.attestation.AttestationResult;
 import com.crosscert.passkey.fido2.attestation.AttestationVerifiers;
-import com.crosscert.passkey.fido2.cbor.CborDecodeException;
 import com.crosscert.passkey.fido2.model.AttestationObject;
 import com.crosscert.passkey.fido2.model.AttestedCredentialData;
 import com.crosscert.passkey.fido2.model.AuthenticatorData;
@@ -29,6 +28,15 @@ public final class RegistrationVerifier {
    */
   public RegistrationVerificationResult verify(RegistrationVerificationRequest req)
       throws Fido2VerificationException {
+    if (req == null
+        || req.clientDataJson() == null
+        || req.attestationObject() == null
+        || req.expectedChallenge() == null
+        || req.expectedOrigins() == null
+        || req.expectedRpId() == null) {
+      throw new Fido2VerificationException(
+          FailureReason.MALFORMED_CLIENT_DATA, "registration request is missing required inputs");
+    }
     CollectedClientData clientData = parseClientData(req.clientDataJson());
     if (!"webauthn.create".equals(clientData.type())) {
       throw new Fido2VerificationException(
@@ -58,6 +66,12 @@ public final class RegistrationVerifier {
     if (acd == null) {
       throw new Fido2VerificationException(
           FailureReason.NO_ATTESTED_CREDENTIAL, "registration has no attested credential data");
+    }
+    int credIdLen = acd.credentialId().length;
+    if (credIdLen < 1 || credIdLen > 1023) {
+      throw new Fido2VerificationException(
+          FailureReason.MALFORMED_CBOR,
+          "credentialId length out of WebAuthn range (1..1023): " + credIdLen);
     }
 
     byte[] clientDataHash = sha256(req.clientDataJson());
@@ -105,8 +119,11 @@ public final class RegistrationVerifier {
       throws Fido2VerificationException {
     try {
       return CollectedClientData.parse(json);
-    } catch (CborDecodeException e) {
-      throw new Fido2VerificationException(FailureReason.MALFORMED_CLIENT_DATA, e.getMessage());
+    } catch (RuntimeException e) {
+      // CborDecodeException for malformed JSON, or NullPointerException if the caller passed
+      // a null clientDataJson — either way the registration cannot be trusted.
+      throw new Fido2VerificationException(
+          FailureReason.MALFORMED_CLIENT_DATA, "clientDataJSON unreadable: " + e.getMessage());
     }
   }
 
@@ -114,8 +131,9 @@ public final class RegistrationVerifier {
       throws Fido2VerificationException {
     try {
       return AttestationObject.parse(raw);
-    } catch (CborDecodeException e) {
-      throw new Fido2VerificationException(FailureReason.MALFORMED_CBOR, e.getMessage());
+    } catch (RuntimeException e) {
+      throw new Fido2VerificationException(
+          FailureReason.MALFORMED_CBOR, "attestationObject unreadable: " + e.getMessage());
     }
   }
 
