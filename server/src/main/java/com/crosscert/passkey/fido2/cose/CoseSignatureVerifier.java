@@ -1,7 +1,9 @@
 package com.crosscert.passkey.fido2.cose;
 
-import java.security.GeneralSecurityException;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
 import java.security.Signature;
+import java.security.SignatureException;
 
 /**
  * Verifies a signature produced by an authenticator's credential private key against the COSE
@@ -15,16 +17,18 @@ public final class CoseSignatureVerifier {
 
   /** Returns {@code true} when {@code signature} is a valid signature of {@code signedData}. */
   public static boolean verify(CoseKey key, byte[] signedData, byte[] signature) {
-    String jcaAlgorithm = jcaAlgorithm(key.algorithm());
     try {
-      Signature verifier = Signature.getInstance(jcaAlgorithm);
+      Signature verifier = Signature.getInstance(jcaAlgorithm(key.algorithm()));
       verifier.initVerify(key.publicKey());
       verifier.update(signedData);
       return verifier.verify(signature);
-    } catch (GeneralSecurityException e) {
-      // A malformed signature (bad DER, wrong length) surfaces here — treat as a failed
-      // verification rather than an error, the caller maps it to SIGNATURE_INVALID.
+    } catch (SignatureException e) {
+      // Malformed signature (bad DER, wrong length) — a genuine verification failure.
       return false;
+    } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+      // A provider misconfiguration or a key/algorithm mismatch — not a verification result.
+      // Surface it rather than masking it as an invalid signature.
+      throw new CoseException("signature verification could not run: " + e.getMessage(), e);
     }
   }
 

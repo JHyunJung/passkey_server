@@ -5,9 +5,11 @@ import com.crosscert.passkey.fido2.cbor.CborDecoder;
 import java.math.BigInteger;
 import java.security.KeyFactory;
 import java.security.PublicKey;
+import java.security.spec.ECFieldFp;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPoint;
 import java.security.spec.ECPublicKeySpec;
+import java.security.spec.EllipticCurve;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.Map;
 
@@ -78,21 +80,59 @@ public final class CoseKey {
     }
     BigInteger x = new BigInteger(1, asBytes(map.get(-2L), "x"));
     BigInteger y = new BigInteger(1, asBytes(map.get(-3L), "y"));
+    ECPoint point = new ECPoint(x, y);
     try {
       java.security.AlgorithmParameters params =
           java.security.AlgorithmParameters.getInstance("EC");
       params.init(new java.security.spec.ECGenParameterSpec("secp256r1"));
       ECParameterSpec ecSpec = params.getParameterSpec(ECParameterSpec.class);
-      ECPublicKeySpec spec = new ECPublicKeySpec(new ECPoint(x, y), ecSpec);
+      assertOnP256Curve(point, ecSpec);
+      ECPublicKeySpec spec = new ECPublicKeySpec(point, ecSpec);
       return KeyFactory.getInstance("EC").generatePublic(spec);
+    } catch (CoseException e) {
+      throw e;
     } catch (Exception e) {
       throw new CoseException("failed to build EC public key", e);
+    }
+  }
+
+  /**
+   * Validates that {@code point} lies on the P-256 curve. The SunEC provider does not perform
+   * point-on-curve validation when building a public key for signature verification, so an
+   * authenticator could otherwise smuggle an off-curve point past registration (invalid curve
+   * attack). Checks coordinate range, rejects the point at infinity, and verifies the curve
+   * equation y² ≡ x³ + ax + b (mod p).
+   */
+  private static void assertOnP256Curve(ECPoint point, ECParameterSpec ecSpec) {
+    if (point.equals(ECPoint.POINT_INFINITY)) {
+      throw new CoseException("EC public key is the point at infinity");
+    }
+    EllipticCurve curve = ecSpec.getCurve();
+    BigInteger p = ((ECFieldFp) curve.getField()).getP();
+    BigInteger x = point.getAffineX();
+    BigInteger y = point.getAffineY();
+    if (x.signum() < 0 || x.compareTo(p) >= 0 || y.signum() < 0 || y.compareTo(p) >= 0) {
+      throw new CoseException("EC public key coordinate out of field range");
+    }
+    BigInteger a = curve.getA();
+    BigInteger b = curve.getB();
+    BigInteger lhs = y.multiply(y).mod(p);
+    BigInteger rhs = x.multiply(x).multiply(x).add(a.multiply(x)).add(b).mod(p);
+    if (!lhs.equals(rhs)) {
+      throw new CoseException("EC public key point is not on the P-256 curve");
     }
   }
 
   private static PublicKey parseRsa(Map<?, ?> map) {
     BigInteger n = new BigInteger(1, asBytes(map.get(-1L), "n"));
     BigInteger e = new BigInteger(1, asBytes(map.get(-2L), "e"));
+    int bitLength = n.bitLength();
+    if (bitLength < 2048 || bitLength > 8192) {
+      throw new CoseException("RSA modulus size out of range: " + bitLength + " bits");
+    }
+    if (e.compareTo(BigInteger.valueOf(3)) < 0 || !e.testBit(0)) {
+      throw new CoseException("RSA public exponent is invalid");
+    }
     try {
       return KeyFactory.getInstance("RSA").generatePublic(new RSAPublicKeySpec(n, e));
     } catch (Exception ex) {

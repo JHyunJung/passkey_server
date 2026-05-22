@@ -69,6 +69,59 @@ class CoseKeyTest {
     assertThatThrownBy(() -> CoseKey.parse(cbor)).isInstanceOf(CoseException.class);
   }
 
+  @Test
+  void rejects_ec_point_not_on_curve() {
+    // 유효한 P-256 키를 만든 뒤 y 좌표를 1만큼 틀어 곡선 밖 점으로 만든다.
+    Map<Object, Object> m = new LinkedHashMap<>();
+    m.put(1L, 2L);
+    m.put(3L, -7L);
+    m.put(-1L, 1L);
+    byte[] x = new byte[32];
+    byte[] y = new byte[32]; // (x=0, y=0) 은 P-256 곡선 위의 점이 아니다.
+    m.put(-2L, x);
+    m.put(-3L, y);
+    byte[] cbor = com.crosscert.passkey.unit.fido2.CborTestEncoder.encodeMap(m);
+    assertThatThrownBy(() -> CoseKey.parse(cbor)).isInstanceOf(CoseException.class);
+  }
+
+  @Test
+  void rejects_weak_rsa_key() throws Exception {
+    java.security.KeyPairGenerator gen = java.security.KeyPairGenerator.getInstance("RSA");
+    gen.initialize(1024); // 2048 하한 미만.
+    java.security.interfaces.RSAPublicKey pub =
+        (java.security.interfaces.RSAPublicKey) gen.generateKeyPair().getPublic();
+    Map<Object, Object> m = new LinkedHashMap<>();
+    m.put(1L, 3L);
+    m.put(3L, -257L);
+    m.put(-1L, toUnsigned(pub.getModulus()));
+    m.put(-2L, toUnsigned(pub.getPublicExponent()));
+    byte[] cbor = com.crosscert.passkey.unit.fido2.CborTestEncoder.encodeMap(m);
+    assertThatThrownBy(() -> CoseKey.parse(cbor)).isInstanceOf(CoseException.class);
+  }
+
+  @Test
+  void rejects_cose_key_missing_required_field() {
+    // x 좌표 누락.
+    Map<Object, Object> m = new LinkedHashMap<>();
+    m.put(1L, 2L);
+    m.put(3L, -7L);
+    m.put(-1L, 1L);
+    m.put(-3L, new byte[32]);
+    byte[] cbor = com.crosscert.passkey.unit.fido2.CborTestEncoder.encodeMap(m);
+    assertThatThrownBy(() -> CoseKey.parse(cbor)).isInstanceOf(CoseException.class);
+  }
+
+  @Test
+  void verify_returns_false_for_malformed_signature() throws Exception {
+    java.security.KeyPairGenerator gen = java.security.KeyPairGenerator.getInstance("EC");
+    gen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+    java.security.interfaces.ECPublicKey pub =
+        (java.security.interfaces.ECPublicKey) gen.generateKeyPair().getPublic();
+    CoseKey key = CoseKey.parse(es256CoseKey(pub));
+    // DER 시퀀스가 아닌 임의 바이트 — SignatureException 경로, false 여야 함.
+    assertThat(CoseSignatureVerifier.verify(key, "msg".getBytes(), new byte[] {1, 2, 3})).isFalse();
+  }
+
   // COSE_Key for EC2/ES256: {1:2, 3:-7, -1:1, -2:x, -3:y}
   private static byte[] es256CoseKey(ECPublicKey pub) {
     byte[] x = unsignedFixed(pub.getW().getAffineX(), 32);
