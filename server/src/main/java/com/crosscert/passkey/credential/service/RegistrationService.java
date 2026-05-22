@@ -18,6 +18,10 @@ import com.crosscert.passkey.credential.domain.TenantWebauthnConfig;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.credential.repository.TenantAttestationPolicyRepository;
 import com.crosscert.passkey.credential.webauthn.Base64UrlCodec;
+import com.crosscert.passkey.fido2.Fido2VerificationException;
+import com.crosscert.passkey.fido2.RegistrationVerificationRequest;
+import com.crosscert.passkey.fido2.RegistrationVerificationResult;
+import com.crosscert.passkey.fido2.RegistrationVerifier;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
@@ -27,11 +31,9 @@ import com.webauthn4j.converter.exception.DataConversionException;
 import com.webauthn4j.converter.util.ObjectConverter;
 import com.webauthn4j.data.RegistrationData;
 import com.webauthn4j.data.RegistrationParameters;
-import com.webauthn4j.data.RegistrationRequest;
 import com.webauthn4j.data.attestation.authenticator.AAGUID;
 import com.webauthn4j.data.attestation.authenticator.AttestedCredentialData;
 import com.webauthn4j.data.client.Origin;
-import com.webauthn4j.data.client.challenge.Challenge;
 import com.webauthn4j.data.client.challenge.DefaultChallenge;
 import com.webauthn4j.metadata.exception.BadStatusException;
 import com.webauthn4j.server.ServerProperty;
@@ -211,33 +213,15 @@ public class RegistrationService {
       throw new BusinessException(ErrorCode.CHALLENGE_NOT_FOUND);
     }
 
-    byte[] attestationObject = Base64UrlCodec.decode(req.attestationObjectB64u());
-    byte[] clientDataJSON = Base64UrlCodec.decode(req.clientDataJsonB64u());
-    RegistrationRequest registrationRequest =
-        new RegistrationRequest(attestationObject, clientDataJSON);
-
-    Challenge challenge = new DefaultChallenge(Base64UrlCodec.decode(stored.challengeB64u()));
-    Set<Origin> origins = new LinkedHashSet<>();
-    for (String o : cfg.originList()) {
-      origins.add(new Origin(o));
-    }
-    ServerProperty serverProperty = new ServerProperty(origins, cfg.getRpId(), challenge);
-
-    // Only REQUIRED is enforced server-side; PREFERRED/DISCOURAGED are best-effort hints to the
-    // authenticator. See UserVerificationPolicy javadoc.
-    boolean userVerificationRequired = cfg.getUserVerification().isStrictRequired();
-    RegistrationParameters params =
-        new RegistrationParameters(serverProperty, null, userVerificationRequired, true);
-
     TenantAttestationPolicy policy =
         policyRepo
             .findByTenantId(cfg.getTenantId())
             .orElseGet(
                 () -> policyRepo.save(TenantAttestationPolicy.permissive(cfg.getTenantId())));
 
-    WebAuthnManager manager = nonStrictManager;
+    AttestationFacts facts;
     if (policy.isMdsStrict()) {
-      manager = strictManagerProvider.getIfAvailable();
+      WebAuthnManager manager = strictManagerProvider.getIfAvailable();
       if (manager == null) {
         log.error(
             "register.mds.unavailable tenantId={} tenantUserId={} — "
@@ -251,59 +235,12 @@ public class RegistrationService {
           "register.mds.strict.engaged tenantId={} tenantUserId={}",
           cfg.getTenantId(),
           stored.tenantUserId());
+      facts = verifyWithWebauthn4j(manager, req, cfg, stored);
+    } else {
+      facts = verifyWithCore(cfg, stored, req);
     }
 
-    RegistrationData regData;
-    try {
-      regData = manager.parse(registrationRequest);
-      manager.verify(regData, params);
-    } catch (BadStatusException e) {
-      // FIDO MDS reported REVOKED / ATTESTATION_KEY_COMPROMISE / USER_VERIFICATION_BYPASS / etc.
-      log.error(
-          "register.authenticator.revoked tenantId={} tenantUserId={} reason={}",
-          cfg.getTenantId(),
-          stored.tenantUserId(),
-          e.getMessage());
-      auditService.append(
-          com.crosscert.passkey.audit.domain.AuditEventType.ATTESTATION_TRUST_FAILED,
-          com.crosscert.passkey.audit.domain.ActorType.END_USER,
-          stored.tenantUserId().toString(),
-          "AUTHENTICATOR",
-          "revoked",
-          java.util.Map.of("reason", String.valueOf(e.getMessage())));
-      metrics.getRegistrationFailure().increment();
-      throw new BusinessException(ErrorCode.AUTHENTICATOR_REVOKED, e.getMessage());
-    } catch (TrustAnchorNotFoundException e) {
-      // Strict mode: no trust anchor matched the AAGUID — authenticator not in MDS.
-      log.warn(
-          "register.mds.trust_failed tenantId={} tenantUserId={} reason={}",
-          cfg.getTenantId(),
-          stored.tenantUserId(),
-          e.getMessage());
-      auditService.append(
-          com.crosscert.passkey.audit.domain.AuditEventType.ATTESTATION_TRUST_FAILED,
-          com.crosscert.passkey.audit.domain.ActorType.END_USER,
-          stored.tenantUserId().toString(),
-          "AUTHENTICATOR",
-          "trust_anchor_missing",
-          java.util.Map.of("reason", String.valueOf(e.getMessage())));
-      metrics.getRegistrationFailure().increment();
-      throw new BusinessException(ErrorCode.MDS_TRUST_FAILED, e.getMessage());
-    } catch (DataConversionException | VerificationException e) {
-      log.warn(
-          "register.attestation.invalid tenantId={} tenantUserId={} reason={}",
-          cfg.getTenantId(),
-          stored.tenantUserId(),
-          e.getMessage());
-      metrics.getRegistrationFailure().increment();
-      throw new BusinessException(ErrorCode.ATTESTATION_INVALID, e.getMessage());
-    }
-
-    AttestedCredentialData acd =
-        regData.getAttestationObject().getAuthenticatorData().getAttestedCredentialData();
-    AAGUID aaguidObj = acd.getAaguid();
-    UUID aaguid = aaguidObj == null ? null : aaguidObj.getValue();
-
+    UUID aaguid = facts.aaguid();
     if (!policy.accepts(aaguid)) {
       log.warn(
           "register.aaguid.rejected tenantId={} tenantUserId={} aaguid={} policyMode={}",
@@ -315,13 +252,9 @@ public class RegistrationService {
       throw new BusinessException(ErrorCode.AAGUID_NOT_ALLOWED);
     }
 
-    // Serialize the full AttestedCredentialData (AAGUID + credentialId + COSE key) so the
-    // authentication path can reconstruct the Authenticator object directly.
-    byte[] attestedCredBytes = attestedConverter.convert(acd);
-
-    long signatureCounter = regData.getAttestationObject().getAuthenticatorData().getSignCount();
-    boolean backupEligible = regData.getAttestationObject().getAuthenticatorData().isFlagBE();
-    boolean backupState = regData.getAttestationObject().getAuthenticatorData().isFlagBS();
+    long signatureCounter = facts.signatureCounter();
+    boolean backupEligible = facts.backupEligible();
+    boolean backupState = facts.backupState();
 
     if (!policy.acceptsSyncable(backupEligible)) {
       log.warn(
@@ -338,8 +271,8 @@ public class RegistrationService {
         Credential.create(
             cfg.getTenantId(),
             stored.tenantUserId(),
-            Base64UrlCodec.encode(acd.getCredentialId()),
-            attestedCredBytes,
+            facts.credentialIdB64u(),
+            facts.attestedCredentialData(),
             aaguid,
             req.transports(),
             stored.userHandleB64u(),
@@ -410,4 +343,143 @@ public class RegistrationService {
     buf.putLong(uuid.getLeastSignificantBits());
     return buf.array();
   }
+
+  private AttestationFacts verifyWithCore(
+      TenantWebauthnConfig cfg, ChallengeRecord stored, RegistrationVerifyRequest req) {
+    RegistrationVerificationRequest verifyReq =
+        new RegistrationVerificationRequest(
+            Base64UrlCodec.decode(req.attestationObjectB64u()),
+            Base64UrlCodec.decode(req.clientDataJsonB64u()),
+            Base64UrlCodec.decode(stored.challengeB64u()),
+            cfg.originList(),
+            cfg.getRpId(),
+            cfg.getUserVerification().isStrictRequired());
+    RegistrationVerificationResult result;
+    try {
+      result = new RegistrationVerifier().verify(verifyReq);
+    } catch (Fido2VerificationException e) {
+      log.warn(
+          "register.attestation.invalid tenantId={} tenantUserId={} reason={} detail={}",
+          cfg.getTenantId(),
+          stored.tenantUserId(),
+          e.reason(),
+          e.getMessage());
+      metrics.getRegistrationFailure().increment();
+      throw new BusinessException(ErrorCode.ATTESTATION_INVALID, e.getMessage());
+    }
+    UUID aaguid = bytesToUuid(result.aaguid());
+    return new AttestationFacts(
+        Base64UrlCodec.encode(result.credentialId()),
+        result.attestedCredentialData(),
+        aaguid,
+        result.signCount(),
+        result.backupEligible(),
+        result.backupState());
+  }
+
+  /** Decode a 16-byte AAGUID into a {@link UUID}; an all-zero AAGUID maps to {@code null}. */
+  private static UUID bytesToUuid(byte[] aaguid) {
+    if (aaguid == null || aaguid.length != 16) {
+      return null;
+    }
+    boolean allZero = true;
+    for (byte b : aaguid) {
+      if (b != 0) {
+        allZero = false;
+        break;
+      }
+    }
+    if (allZero) {
+      return null;
+    }
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(aaguid);
+    return new UUID(buf.getLong(), buf.getLong());
+  }
+
+  private AttestationFacts verifyWithWebauthn4j(
+      WebAuthnManager manager,
+      RegistrationVerifyRequest req,
+      TenantWebauthnConfig cfg,
+      ChallengeRecord stored) {
+    byte[] attestationObject = Base64UrlCodec.decode(req.attestationObjectB64u());
+    byte[] clientDataJSON = Base64UrlCodec.decode(req.clientDataJsonB64u());
+    com.webauthn4j.data.RegistrationRequest registrationRequest =
+        new com.webauthn4j.data.RegistrationRequest(attestationObject, clientDataJSON);
+
+    com.webauthn4j.data.client.challenge.Challenge challenge =
+        new DefaultChallenge(Base64UrlCodec.decode(stored.challengeB64u()));
+    Set<Origin> origins = new LinkedHashSet<>();
+    for (String o : cfg.originList()) {
+      origins.add(new Origin(o));
+    }
+    ServerProperty serverProperty = new ServerProperty(origins, cfg.getRpId(), challenge);
+    boolean userVerificationRequired = cfg.getUserVerification().isStrictRequired();
+    RegistrationParameters params =
+        new RegistrationParameters(serverProperty, null, userVerificationRequired, true);
+
+    RegistrationData regData;
+    try {
+      regData = manager.parse(registrationRequest);
+      manager.verify(regData, params);
+    } catch (BadStatusException e) {
+      log.error(
+          "register.authenticator.revoked tenantId={} tenantUserId={} reason={}",
+          cfg.getTenantId(),
+          stored.tenantUserId(),
+          e.getMessage());
+      auditService.append(
+          com.crosscert.passkey.audit.domain.AuditEventType.ATTESTATION_TRUST_FAILED,
+          com.crosscert.passkey.audit.domain.ActorType.END_USER,
+          stored.tenantUserId().toString(),
+          "AUTHENTICATOR",
+          "revoked",
+          java.util.Map.of("reason", String.valueOf(e.getMessage())));
+      metrics.getRegistrationFailure().increment();
+      throw new BusinessException(ErrorCode.AUTHENTICATOR_REVOKED, e.getMessage());
+    } catch (TrustAnchorNotFoundException e) {
+      log.warn(
+          "register.mds.trust_failed tenantId={} tenantUserId={} reason={}",
+          cfg.getTenantId(),
+          stored.tenantUserId(),
+          e.getMessage());
+      auditService.append(
+          com.crosscert.passkey.audit.domain.AuditEventType.ATTESTATION_TRUST_FAILED,
+          com.crosscert.passkey.audit.domain.ActorType.END_USER,
+          stored.tenantUserId().toString(),
+          "AUTHENTICATOR",
+          "trust_anchor_missing",
+          java.util.Map.of("reason", String.valueOf(e.getMessage())));
+      metrics.getRegistrationFailure().increment();
+      throw new BusinessException(ErrorCode.MDS_TRUST_FAILED, e.getMessage());
+    } catch (DataConversionException | VerificationException e) {
+      log.warn(
+          "register.attestation.invalid tenantId={} tenantUserId={} reason={}",
+          cfg.getTenantId(),
+          stored.tenantUserId(),
+          e.getMessage());
+      metrics.getRegistrationFailure().increment();
+      throw new BusinessException(ErrorCode.ATTESTATION_INVALID, e.getMessage());
+    }
+
+    AttestedCredentialData acd =
+        regData.getAttestationObject().getAuthenticatorData().getAttestedCredentialData();
+    AAGUID aaguidObj = acd.getAaguid();
+    UUID aaguid = aaguidObj == null ? null : aaguidObj.getValue();
+    return new AttestationFacts(
+        Base64UrlCodec.encode(acd.getCredentialId()),
+        attestedConverter.convert(acd),
+        aaguid,
+        regData.getAttestationObject().getAuthenticatorData().getSignCount(),
+        regData.getAttestationObject().getAuthenticatorData().isFlagBE(),
+        regData.getAttestationObject().getAuthenticatorData().isFlagBS());
+  }
+
+  /** Verified attestation facts, normalized across the self-core and webauthn4j strict paths. */
+  private record AttestationFacts(
+      String credentialIdB64u,
+      byte[] attestedCredentialData,
+      UUID aaguid,
+      long signatureCounter,
+      boolean backupEligible,
+      boolean backupState) {}
 }
