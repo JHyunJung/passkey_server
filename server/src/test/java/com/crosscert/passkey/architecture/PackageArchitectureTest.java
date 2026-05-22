@@ -118,6 +118,29 @@ class PackageArchitectureTest {
         .check(CLASSES);
   }
 
+  // Rule 7: the fido2 core is a pure WebAuthn implementation — it must not depend on any domain
+  // package, on Spring, or on the application's exception types. Only java.* + the fido2 package
+  // itself + Jackson (clientDataJSON parsing) are permitted.
+  @Test
+  void fido2_core_is_pure() {
+    noClasses()
+        .that()
+        .resideInAPackage("..fido2..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage(
+            "..tenant..",
+            "..auth..",
+            "..credential..",
+            "..audit..",
+            "..admin..",
+            "..common..",
+            "..infrastructure..",
+            "..ratelimit..",
+            "org.springframework..")
+        .check(CLASSES);
+  }
+
   private static ArchCondition<JavaClass> referenceAdminAuthz() {
     return new ArchCondition<>("reference com.crosscert.passkey.admin.security.AdminAuthz") {
       @Override
