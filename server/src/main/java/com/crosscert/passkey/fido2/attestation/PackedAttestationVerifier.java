@@ -6,19 +6,25 @@ import com.crosscert.passkey.fido2.cbor.CborDecodeException;
 import com.crosscert.passkey.fido2.cose.CoseException;
 import com.crosscert.passkey.fido2.cose.CoseKey;
 import com.crosscert.passkey.fido2.cose.CoseSignatureVerifier;
+import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
+import com.crosscert.passkey.fido2.mds.MetadataEntry;
 import com.crosscert.passkey.fido2.model.AttestationObject;
 import com.crosscert.passkey.fido2.model.AttestedCredentialData;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SignatureException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import javax.naming.InvalidNameException;
 import javax.naming.ldap.LdapName;
 import javax.naming.ldap.Rdn;
@@ -48,9 +54,7 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
 
   @Override
   public AttestationResult verify(
-      AttestationObject attestationObject,
-      byte[] clientDataHash,
-      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
+      AttestationObject attestationObject, byte[] clientDataHash, MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
     Map<?, ?> attStmt = attestationObject.attestationStatement();
 
@@ -101,7 +105,7 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
       long algValue,
       byte[] signedData,
       byte[] signature,
-      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
+      MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
     try {
       // x5c is a CBOR array of DER-encoded X.509 certificates.
@@ -110,7 +114,7 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
             FailureReason.ATTESTATION_INVALID, "packed x5c must be a non-empty array");
       }
       CertificateFactory cf = CertificateFactory.getInstance("X.509");
-      java.util.List<X509Certificate> chain = new java.util.ArrayList<>();
+      List<X509Certificate> chain = new ArrayList<>();
       for (Object certObj : x5cList) {
         if (!(certObj instanceof byte[] certDer)) {
           throw new Fido2VerificationException(
@@ -167,13 +171,10 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
    * certificate chain to one of the MDS trust anchors registered for the credential's AAGUID.
    */
   private static void verifyTrustAnchor(
-      java.util.List<X509Certificate> chain,
-      AttestedCredentialData acd,
-      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
+      List<X509Certificate> chain, AttestedCredentialData acd, MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
-    java.util.UUID aaguid = aaguidOf(acd);
-    java.util.Optional<com.crosscert.passkey.fido2.mds.MetadataEntry> entry =
-        trustAnchors.findEntry(aaguid);
+    UUID aaguid = aaguidOf(acd);
+    Optional<MetadataEntry> entry = trustAnchors.findEntry(aaguid);
     if (entry.isEmpty()) {
       throw new Fido2VerificationException(
           FailureReason.MDS_TRUST_FAILED,
@@ -191,10 +192,10 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
     }
   }
 
-  /** Decode the 16-byte AAGUID of {@code acd} into a {@link java.util.UUID}. */
-  private static java.util.UUID aaguidOf(AttestedCredentialData acd) {
-    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(acd.aaguid());
-    return new java.util.UUID(buf.getLong(), buf.getLong());
+  /** Decode the 16-byte AAGUID of {@code acd} into a {@link UUID}. */
+  private static UUID aaguidOf(AttestedCredentialData acd) {
+    ByteBuffer buf = ByteBuffer.wrap(acd.aaguid());
+    return new UUID(buf.getLong(), buf.getLong());
   }
 
   /**

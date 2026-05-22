@@ -2,6 +2,7 @@ package com.crosscert.passkey.fido2.attestation;
 
 import com.crosscert.passkey.fido2.Fido2VerificationException;
 import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
+import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
 import com.crosscert.passkey.fido2.model.AttestationObject;
 
 /**
@@ -18,9 +19,7 @@ public final class NoneAttestationVerifier implements AttestationVerifier {
 
   @Override
   public AttestationResult verify(
-      AttestationObject attestationObject,
-      byte[] clientDataHash,
-      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
+      AttestationObject attestationObject, byte[] clientDataHash, MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
     // none attestation carries no certificate — trustAnchors is not applicable.
     if (!attestationObject.attestationStatement().isEmpty()) {

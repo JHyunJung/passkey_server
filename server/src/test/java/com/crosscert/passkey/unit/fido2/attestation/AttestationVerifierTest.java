@@ -279,6 +279,185 @@ class AttestationVerifierTest {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Strict-mode (MdsTrustAnchorSource != null) packed full attestation tests.
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void strict_packed_full_passes_with_trusted_chain() throws Exception {
+    StrictPackedScenario s = strictPackedScenario(false /* not revoked */);
+    AttestationResult result =
+        AttestationVerifiers.forFormat("packed")
+            .verify(s.attestationObject(), s.clientDataHash(), s.trustAnchors());
+    assertThat(result.format()).isEqualTo("packed");
+    assertThat(result.trustPathPresent()).isTrue();
+  }
+
+  @Test
+  void strict_packed_full_rejects_unknown_aaguid() throws Exception {
+    // trustAnchors with NO entry for the credential's AAGUID — MDS_TRUST_FAILED.
+    StrictPackedScenario s = strictPackedScenario(false);
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource empty =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of());
+    assertThatThrownBy(
+            () ->
+                AttestationVerifiers.forFormat("packed")
+                    .verify(s.attestationObject(), s.clientDataHash(), empty))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.MDS_TRUST_FAILED);
+  }
+
+  @Test
+  void strict_packed_full_rejects_revoked_authenticator() throws Exception {
+    StrictPackedScenario s = strictPackedScenario(true /* revoked */);
+    assertThatThrownBy(
+            () ->
+                AttestationVerifiers.forFormat("packed")
+                    .verify(s.attestationObject(), s.clientDataHash(), s.trustAnchors()))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.AUTHENTICATOR_REVOKED);
+  }
+
+  @Test
+  void strict_packed_full_rejects_untrusted_chain() throws Exception {
+    // The MDS entry exists for the AAGUID but registers a DIFFERENT root CA as trust anchor.
+    StrictPackedScenario s = strictPackedScenario(false);
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource wrongAnchor =
+        strictScenarioWithWrongRoot(s.aaguid());
+    assertThatThrownBy(
+            () ->
+                AttestationVerifiers.forFormat("packed")
+                    .verify(s.attestationObject(), s.clientDataHash(), wrongAnchor))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.TRUST_PATH_INVALID);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Strict-mode scenario fixtures.
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * A strict-mode packed full attestation test scenario: an attestation certificate satisfying
+   * §8.2.1 (X.509 v3, CA=false, OU="Authenticator Attestation") issued by a root CA, the
+   * attestationObject signed by that cert's key, and an MdsTrustAnchorSource registering the root
+   * CA for the credential's AAGUID.
+   */
+  private record StrictPackedScenario(
+      AttestationObject attestationObject,
+      byte[] clientDataHash,
+      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors,
+      java.util.UUID aaguid) {}
+
+  /**
+   * Builds a strict-mode scenario. The attestation cert (§8.2.1-compliant) is issued by a root CA;
+   * the x5c chain carries only that leaf cert and the root CA is the MDS trust anchor — matching
+   * {@link com.crosscert.passkey.fido2.attestation.AttestationCertPathValidator}'s leaf-first,
+   * anchor-excluded chain contract. When {@code revoked} is true the MDS entry's status report is
+   * {@code REVOKED}.
+   */
+  private static StrictPackedScenario strictPackedScenario(boolean revoked) throws Exception {
+    byte[] clientDataHash = new byte[32];
+    byte[] aaguidBytes = fixedAaguid();
+    java.util.UUID aaguid = uuidOf(aaguidBytes);
+
+    KeyPair rootPair = ecKeyPair();
+    X509Certificate rootCa = issuedCert(rootPair, ROOT_CA_DN, rootPair, ROOT_CA_DN, true, null);
+
+    KeyPair attPair = ecKeyPair();
+    X509Certificate attCert =
+        issuedCert(attPair, REQUIRED_OU_DN, rootPair, ROOT_CA_DN, false, aaguidBytes);
+
+    byte[] authDataBytes = authData(aaguidBytes, ecCoseKey(ecKeyPair()));
+    byte[] sig = sign(attPair.getPrivate(), "SHA256withECDSA", authDataBytes, clientDataHash);
+    AttestationObject obj =
+        AttestationObject.parse(packedFullAttestation(authDataBytes, -7L, sig, attCert));
+
+    com.crosscert.passkey.fido2.mds.StatusReport status =
+        revoked
+            ? com.crosscert.passkey.fido2.mds.StatusReport.REVOKED
+            : com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED;
+    com.crosscert.passkey.fido2.mds.MetadataEntry entry =
+        new com.crosscert.passkey.fido2.mds.MetadataEntry(
+            aaguid, java.util.List.of(rootCa), java.util.List.of(status));
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of(entry));
+
+    return new StrictPackedScenario(obj, clientDataHash, trustAnchors, aaguid);
+  }
+
+  /**
+   * An {@code MdsTrustAnchorSource} that has an entry for {@code aaguid} (so MDS lookup succeeds
+   * and the authenticator is non-revoked) but registers an unrelated root CA as the trust anchor —
+   * the attestation cert does not chain to it, so PKIX path validation fails.
+   */
+  private static com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource strictScenarioWithWrongRoot(
+      java.util.UUID aaguid) throws Exception {
+    KeyPair wrongRootPair = ecKeyPair();
+    X509Certificate wrongRoot =
+        issuedCert(wrongRootPair, ROOT_CA_DN, wrongRootPair, ROOT_CA_DN, true, null);
+    com.crosscert.passkey.fido2.mds.MetadataEntry entry =
+        new com.crosscert.passkey.fido2.mds.MetadataEntry(
+            aaguid,
+            java.util.List.of(wrongRoot),
+            java.util.List.of(com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED));
+    return new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of(entry));
+  }
+
+  /** A subject DN for a root CA — distinct from the §8.2.1 attestation-cert OU DN. */
+  private static final String ROOT_CA_DN = "CN=Test Attestation Root CA, O=Test, C=US";
+
+  /** A fixed 16-byte AAGUID for strict-mode scenarios (non-zero so it is unambiguous). */
+  private static byte[] fixedAaguid() {
+    byte[] aaguid = new byte[16];
+    for (int i = 0; i < 16; i++) {
+      aaguid[i] = (byte) (0xA0 + i);
+    }
+    return aaguid;
+  }
+
+  /** Decodes 16 AAGUID bytes into a {@link java.util.UUID}. */
+  private static java.util.UUID uuidOf(byte[] aaguid) {
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(aaguid);
+    return new java.util.UUID(buf.getLong(), buf.getLong());
+  }
+
+  /**
+   * Builds an X.509 v3 certificate for {@code subjectPair} issued (signed) by {@code issuerPair}.
+   * Self-signed when issuer == subject. Adds Basic Constraints ({@code ca}) and — when {@code
+   * aaguid} is non-null — the FIDO AAGUID extension. Reuses the same BouncyCastle builder pattern
+   * as {@link #buildCert}, parameterized on the issuer so a root CA can sign an attestation cert.
+   */
+  private static X509Certificate issuedCert(
+      KeyPair subjectPair,
+      String subjectDn,
+      KeyPair issuerPair,
+      String issuerDn,
+      boolean ca,
+      byte[] aaguid)
+      throws Exception {
+    Instant now = Instant.now();
+    JcaX509v3CertificateBuilder builder =
+        new JcaX509v3CertificateBuilder(
+            new X500Name(issuerDn),
+            BigInteger.valueOf(System.nanoTime()),
+            Date.from(now.minus(1, ChronoUnit.DAYS)),
+            Date.from(now.plus(365, ChronoUnit.DAYS)),
+            new X500Name(subjectDn),
+            subjectPair.getPublic());
+    builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(ca));
+    if (aaguid != null) {
+      builder.addExtension(
+          new ASN1ObjectIdentifier(FIDO_AAGUID_EXTENSION_OID), false, new DEROctetString(aaguid));
+    }
+    ContentSigner signer =
+        new JcaContentSignerBuilder("SHA256withECDSA").build(issuerPair.getPrivate());
+    X509CertificateHolder holder = builder.build(signer);
+    return new JcaX509CertificateConverter().getCertificate(holder);
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Fixture helpers.
   // ---------------------------------------------------------------------------------------------
 
