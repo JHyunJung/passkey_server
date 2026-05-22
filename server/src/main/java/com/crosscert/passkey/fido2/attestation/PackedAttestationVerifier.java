@@ -47,7 +47,10 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
   }
 
   @Override
-  public AttestationResult verify(AttestationObject attestationObject, byte[] clientDataHash)
+  public AttestationResult verify(
+      AttestationObject attestationObject,
+      byte[] clientDataHash,
+      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
     Map<?, ?> attStmt = attestationObject.attestationStatement();
 
@@ -79,7 +82,7 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
     // 4. Branch on x5c presence.
     Object x5cObj = attStmt.get("x5c");
     if (x5cObj != null) {
-      return verifyFull(x5cObj, acd, algValue, signedData, signature);
+      return verifyFull(x5cObj, acd, algValue, signedData, signature, trustAnchors);
     } else {
       return verifySelf(acd, algValue, signedData, signature);
     }
@@ -87,14 +90,18 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
 
   /**
    * Full attestation (x5c present): validate the attestation certificate's WebAuthn L3 §8.2.1
-   * requirements and verify the attestation signature with the certificate's public key. The
-   * certificate chain trust path (up to a root CA) is NOT validated here — that is the strict / MDS
-   * path's job (Milestone B). The §8.2.1 certificate-integrity checks below are what webauthn4j's
-   * {@code PackedAttestationStatementVerifier} performs regardless of strict mode; only
-   * trust-anchor validation is gated on strict mode.
+   * requirements, verify the attestation signature with the certificate's public key, and — when
+   * {@code trustAnchors} is non-null (strict mode) — validate the certificate chain to an MDS trust
+   * anchor and reject revoked authenticators. When {@code trustAnchors} is null the chain trust
+   * path is not validated (non-strict — matches webauthn4j's non-strict manager).
    */
   private static AttestationResult verifyFull(
-      Object x5cObj, AttestedCredentialData acd, long algValue, byte[] signedData, byte[] signature)
+      Object x5cObj,
+      AttestedCredentialData acd,
+      long algValue,
+      byte[] signedData,
+      byte[] signature,
+      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
     try {
       // x5c is a CBOR array of DER-encoded X.509 certificates.
@@ -102,17 +109,17 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
         throw new Fido2VerificationException(
             FailureReason.ATTESTATION_INVALID, "packed x5c must be a non-empty array");
       }
-      Object firstCertObj = x5cList.get(0);
-      if (!(firstCertObj instanceof byte[] certDer)) {
-        throw new Fido2VerificationException(
-            FailureReason.ATTESTATION_INVALID,
-            "packed x5c first element must be a DER-encoded certificate");
-      }
-
-      // Parse the attestation certificate.
       CertificateFactory cf = CertificateFactory.getInstance("X.509");
-      X509Certificate cert =
-          (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certDer));
+      java.util.List<X509Certificate> chain = new java.util.ArrayList<>();
+      for (Object certObj : x5cList) {
+        if (!(certObj instanceof byte[] certDer)) {
+          throw new Fido2VerificationException(
+              FailureReason.ATTESTATION_INVALID,
+              "packed x5c element must be a DER-encoded certificate");
+        }
+        chain.add((X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certDer)));
+      }
+      X509Certificate cert = chain.get(0);
 
       // WebAuthn L3 §8.2.1: validate the attestation certificate's integrity requirements.
       verifyAttestationCertificateRequirements(cert, acd);
@@ -122,11 +129,16 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
       java.security.Signature verifier = java.security.Signature.getInstance(jcaAlg);
       verifier.initVerify(cert.getPublicKey());
       verifier.update(signedData);
-      boolean valid = verifier.verify(signature);
-      if (!valid) {
+      if (!verifier.verify(signature)) {
         throw new Fido2VerificationException(
             FailureReason.ATTESTATION_INVALID,
             "packed full attestation signature invalid against attestation cert");
+      }
+
+      // Strict mode (trustAnchors != null): validate the chain to an MDS trust anchor and reject
+      // revoked authenticators. Non-strict (null): the chain trust path is not validated.
+      if (trustAnchors != null) {
+        verifyTrustAnchor(chain, acd, trustAnchors);
       }
       return new AttestationResult("packed", true);
     } catch (Fido2VerificationException e) {
@@ -148,6 +160,41 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
           FailureReason.ATTESTATION_INVALID,
           "packed full attestation verification failed: " + e.getMessage());
     }
+  }
+
+  /**
+   * Strict-mode trust validation: reject a revoked authenticator, then validate the attestation
+   * certificate chain to one of the MDS trust anchors registered for the credential's AAGUID.
+   */
+  private static void verifyTrustAnchor(
+      java.util.List<X509Certificate> chain,
+      AttestedCredentialData acd,
+      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
+      throws Fido2VerificationException {
+    java.util.UUID aaguid = aaguidOf(acd);
+    java.util.Optional<com.crosscert.passkey.fido2.mds.MetadataEntry> entry =
+        trustAnchors.findEntry(aaguid);
+    if (entry.isEmpty()) {
+      throw new Fido2VerificationException(
+          FailureReason.MDS_TRUST_FAILED,
+          "no MDS entry for AAGUID " + aaguid + " — authenticator not in metadata");
+    }
+    if (entry.get().isRevoked()) {
+      throw new Fido2VerificationException(
+          FailureReason.AUTHENTICATOR_REVOKED,
+          "authenticator AAGUID " + aaguid + " is revoked or compromised per MDS");
+    }
+    if (!AttestationCertPathValidator.validates(chain, trustAnchors.trustAnchors(aaguid))) {
+      throw new Fido2VerificationException(
+          FailureReason.TRUST_PATH_INVALID,
+          "attestation certificate chain does not validate to an MDS trust anchor");
+    }
+  }
+
+  /** Decode the 16-byte AAGUID of {@code acd} into a {@link java.util.UUID}. */
+  private static java.util.UUID aaguidOf(AttestedCredentialData acd) {
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(acd.aaguid());
+    return new java.util.UUID(buf.getLong(), buf.getLong());
   }
 
   /**

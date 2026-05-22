@@ -17,8 +17,12 @@ public final class NoneAttestationVerifier implements AttestationVerifier {
   }
 
   @Override
-  public AttestationResult verify(AttestationObject attestationObject, byte[] clientDataHash)
+  public AttestationResult verify(
+      AttestationObject attestationObject,
+      byte[] clientDataHash,
+      com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
+    // none attestation carries no certificate — trustAnchors is not applicable.
     if (!attestationObject.attestationStatement().isEmpty()) {
       throw new Fido2VerificationException(
           FailureReason.ATTESTATION_INVALID, "none attestation must have an empty statement");

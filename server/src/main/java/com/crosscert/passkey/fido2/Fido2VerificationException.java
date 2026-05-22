@@ -22,7 +22,13 @@ public class Fido2VerificationException extends Exception {
     UNSUPPORTED_ALGORITHM,
     UNSUPPORTED_ATTESTATION_FORMAT,
     ATTESTATION_INVALID,
-    SIGNATURE_INVALID
+    SIGNATURE_INVALID,
+    /** The attestation certificate chain does not validate to an MDS trust anchor. */
+    TRUST_PATH_INVALID,
+    /** No MDS metadata entry exists for the authenticator's AAGUID. */
+    MDS_TRUST_FAILED,
+    /** The authenticator is revoked or compromised per its MDS status report. */
+    AUTHENTICATOR_REVOKED
   }
 
   private final FailureReason reason;

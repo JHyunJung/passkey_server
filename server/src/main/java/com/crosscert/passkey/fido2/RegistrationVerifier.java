@@ -77,7 +77,7 @@ public final class RegistrationVerifier {
     byte[] clientDataHash = sha256(req.clientDataJson());
     AttestationResult attestation =
         AttestationVerifiers.forFormat(attestationObject.format())
-            .verify(attestationObject, clientDataHash);
+            .verify(attestationObject, clientDataHash, null);
 
     return new RegistrationVerificationResult(
         acd.credentialId(),

@@ -46,7 +46,8 @@ class AttestationVerifierTest {
   @Test
   void verifies_none_attestation() throws Exception {
     AttestationObject obj = AttestationObject.parse(noneAttestationObject());
-    AttestationResult result = AttestationVerifiers.forFormat("none").verify(obj, new byte[32]);
+    AttestationResult result =
+        AttestationVerifiers.forFormat("none").verify(obj, new byte[32], null);
     assertThat(result.format()).isEqualTo("none");
     assertThat(result.trustPathPresent()).isFalse();
   }
@@ -56,7 +57,7 @@ class AttestationVerifierTest {
     Map<Object, Object> attStmt = new LinkedHashMap<>();
     attStmt.put("x", 1L);
     AttestationObject obj = AttestationObject.parse(attestationObject("none", attStmt));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("none").verify(obj, new byte[32]))
+    assertThatThrownBy(() -> AttestationVerifiers.forFormat("none").verify(obj, new byte[32], null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -75,7 +76,8 @@ class AttestationVerifierTest {
     byte[] clientDataHash = new byte[32];
     AttestationObject obj =
         AttestationObject.parse(packedSelfAttestationObject(clientDataHash, true));
-    AttestationResult result = AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash);
+    AttestationResult result =
+        AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null);
     assertThat(result.format()).isEqualTo("packed");
     assertThat(result.trustPathPresent()).isFalse();
   }
@@ -85,7 +87,8 @@ class AttestationVerifierTest {
     byte[] clientDataHash = new byte[32];
     AttestationObject obj =
         AttestationObject.parse(packedSelfAttestationObject(clientDataHash, false));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash))
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -105,7 +108,8 @@ class AttestationVerifierTest {
 
     AttestationObject obj =
         AttestationObject.parse(packedFullAttestation(authDataBytes, -7L, sig, attCert));
-    AttestationResult result = AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash);
+    AttestationResult result =
+        AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null);
     assertThat(result.format()).isEqualTo("packed");
     assertThat(result.trustPathPresent()).isTrue();
   }
@@ -124,7 +128,8 @@ class AttestationVerifierTest {
 
     AttestationObject obj =
         AttestationObject.parse(packedFullAttestation(authDataBytes, -257L, sig, attCert));
-    AttestationResult result = AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash);
+    AttestationResult result =
+        AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null);
     assertThat(result.format()).isEqualTo("packed");
     assertThat(result.trustPathPresent()).isTrue();
   }
@@ -143,7 +148,8 @@ class AttestationVerifierTest {
 
     AttestationObject obj =
         AttestationObject.parse(packedFullAttestation(authDataBytes, -7L, badSig, attCert));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash))
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -164,7 +170,8 @@ class AttestationVerifierTest {
 
     AttestationObject obj =
         AttestationObject.parse(packedFullAttestation(authDataBytes, -7L, sig, attCert));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash))
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -186,7 +193,8 @@ class AttestationVerifierTest {
 
     AttestationObject obj =
         AttestationObject.parse(packedFullAttestation(authDataBytes, -7L, sig, attCert));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash))
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -206,7 +214,8 @@ class AttestationVerifierTest {
 
     AttestationObject obj =
         AttestationObject.parse(packedFullAttestation(authDataBytes, -7L, sig, attCert));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash))
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -229,7 +238,8 @@ class AttestationVerifierTest {
 
     AttestationObject obj =
         AttestationObject.parse(packedFullAttestation(authDataBytes, -7L, sig, attCert));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash))
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -240,7 +250,8 @@ class AttestationVerifierTest {
     Map<Object, Object> attStmt = new LinkedHashMap<>();
     attStmt.put("alg", -7L);
     AttestationObject obj = AttestationObject.parse(attestationObject("packed", attStmt));
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("packed").verify(obj, new byte[32]))
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, new byte[32], null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
@@ -261,7 +272,7 @@ class AttestationVerifierTest {
     obj.put("authData", base.authenticatorData().rawBytes());
     AttestationObject mismatched = AttestationObject.parse(CborTestEncoder.encodeMap(obj));
     assertThatThrownBy(
-            () -> AttestationVerifiers.forFormat("packed").verify(mismatched, clientDataHash))
+            () -> AttestationVerifiers.forFormat("packed").verify(mismatched, clientDataHash, null))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
