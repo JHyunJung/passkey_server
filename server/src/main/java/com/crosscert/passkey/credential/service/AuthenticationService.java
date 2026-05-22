@@ -43,6 +43,9 @@ public class AuthenticationService {
 
   private static final SecureRandom RNG = new SecureRandom();
 
+  // Stateless — safe to share a single instance across all ceremonies.
+  private static final AuthenticationVerifier ASSERTION_VERIFIER = new AuthenticationVerifier();
+
   private final TenantWebauthnConfigService configService;
   private final TenantUserRepository userRepo;
   private final CredentialRepository credentialRepo;
@@ -296,7 +299,7 @@ public class AuthenticationService {
             credential.getPublicKeyCose(),
             cfg.getUserVerification().isStrictRequired());
     try {
-      return new AuthenticationVerifier().verify(verifyReq);
+      return ASSERTION_VERIFIER.verify(verifyReq);
     } catch (Fido2VerificationException e) {
       log.warn(
           "auth.assertion.invalid tenantId={} credentialId={} reason={} detail={}",
