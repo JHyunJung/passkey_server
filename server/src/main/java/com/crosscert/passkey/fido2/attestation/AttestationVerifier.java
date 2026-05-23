@@ -18,7 +18,8 @@ public sealed interface AttestationVerifier
     permits NoneAttestationVerifier,
         PackedAttestationVerifier,
         AppleAnonymousAttestationVerifier,
-        AndroidKeyAttestationVerifier {
+        AndroidKeyAttestationVerifier,
+        AndroidSafetyNetAttestationVerifier {
 
   /** The {@code fmt} string this verifier handles. */
   String format();
