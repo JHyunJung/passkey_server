@@ -75,6 +75,18 @@ public class Credential extends TenantScopedEntity {
   @Column(name = "revoked_reason")
   private CredentialRevokedReason revokedReason;
 
+  @Column(name = "suspended_at")
+  private OffsetDateTime suspendedAt;
+
+  @Column(name = "suspended_reason", length = 64)
+  private String suspendedReason;
+
+  @Column(name = "unsuspended_at")
+  private OffsetDateTime unsuspendedAt;
+
+  @Column(name = "unsuspended_by", length = 128)
+  private String unsuspendedBy;
+
   @SuppressWarnings("checkstyle:ParameterNumber")
   private Credential(
       UUID id,
@@ -146,6 +158,43 @@ public class Credential extends TenantScopedEntity {
     this.status = CredentialStatus.REVOKED;
     this.revokedAt = OffsetDateTime.now(ZoneOffset.UTC);
     this.revokedReason = reason;
+  }
+
+  /**
+   * Suspend (post-registration auto-block path — currently MDS critical AAGUID detection).
+   * Idempotent: re-suspending preserves the original suspendedAt/Reason.
+   * Throws CREDENTIAL_INVALID_STATE on REVOKED credential (revoked is terminal).
+   */
+  public void suspend(String reasonDetail) {
+    if (this.status == CredentialStatus.SUSPENDED) {
+      return; // idempotent — keep original metadata
+    }
+    if (this.status == CredentialStatus.REVOKED) {
+      throw new BusinessException(
+          ErrorCode.CREDENTIAL_INVALID_STATE, "cannot suspend a revoked credential");
+    }
+    this.status = CredentialStatus.SUSPENDED;
+    this.suspendedAt = OffsetDateTime.now(ZoneOffset.UTC);
+    this.suspendedReason = reasonDetail;
+  }
+
+  /**
+   * Platform Operator manual unsuspend. Restores ACTIVE; preserves suspendedAt/Reason for
+   * forensics; sets unsuspendedAt/By. No refresh token re-issue — user must complete a fresh
+   * assertion to receive a new session.
+   */
+  public void unsuspend(String actorId) {
+    if (this.status != CredentialStatus.SUSPENDED) {
+      throw new BusinessException(
+          ErrorCode.CREDENTIAL_INVALID_STATE, "credential is not suspended");
+    }
+    this.status = CredentialStatus.ACTIVE;
+    this.unsuspendedAt = OffsetDateTime.now(ZoneOffset.UTC);
+    this.unsuspendedBy = actorId;
+  }
+
+  public boolean isSuspended() {
+    return this.status == CredentialStatus.SUSPENDED;
   }
 
   public boolean isActive() {
