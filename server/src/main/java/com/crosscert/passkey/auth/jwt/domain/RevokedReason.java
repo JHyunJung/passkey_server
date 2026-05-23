@@ -15,4 +15,6 @@ public enum RevokedReason {
   REUSE_DETECTED,
   /** Admin action (forced sign-out / incident response). */
   ADMIN_FORCED,
+  /** Underlying credential was auto-suspended by MDS revocation scan. */
+  CREDENTIAL_SUSPENDED,
 }

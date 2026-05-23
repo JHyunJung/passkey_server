@@ -65,6 +65,8 @@ public enum ErrorCode {
       HttpStatus.FORBIDDEN, "P013", "Syncable / backup-eligible authenticator not allowed"),
   MDS_DISABLED(HttpStatus.CONFLICT, "P014", "FIDO MDS is disabled on this deployment"),
   MDS_REFRESH_FAILED(HttpStatus.BAD_GATEWAY, "P015", "Failed to refresh FIDO MDS metadata"),
+  CREDENTIAL_SUSPENDED(HttpStatus.FORBIDDEN, "P016", "Credential is suspended"),
+  CREDENTIAL_INVALID_STATE(HttpStatus.CONFLICT, "P017", "Credential state transition not allowed"),
 
   // ---------- Rate-limit (R) — M3 ----------
   RATE_LIMIT_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS, "R001", "Rate limit exceeded"),
