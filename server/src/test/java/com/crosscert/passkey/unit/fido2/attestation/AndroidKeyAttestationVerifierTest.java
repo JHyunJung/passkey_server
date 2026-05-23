@@ -73,6 +73,87 @@ class AndroidKeyAttestationVerifierTest {
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
   }
 
+  @Test
+  void strict_android_key_attestation_passes_with_trusted_anchor() throws Exception {
+    Fixture f = Fixture.build(true, true);
+    AttestationObject obj = AttestationObject.parse(f.attestationObject);
+    java.util.UUID aaguid = aaguidOfAttestation(obj);
+    java.security.cert.X509Certificate selfCert = leafOf(obj);
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource source =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
+            java.util.List.of(
+                new com.crosscert.passkey.fido2.mds.MetadataEntry(
+                    aaguid,
+                    java.util.List.of(selfCert),
+                    java.util.List.of(
+                        com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED))));
+    AttestationResult result =
+        new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, source);
+    assertThat(result.format()).isEqualTo("android-key");
+    assertThat(result.trustPathPresent()).isTrue();
+  }
+
+  @Test
+  void strict_android_key_attestation_rejects_untrusted_chain() throws Exception {
+    Fixture f = Fixture.build(true, true);
+    AttestationObject obj = AttestationObject.parse(f.attestationObject);
+    java.security.KeyPairGenerator gen = java.security.KeyPairGenerator.getInstance("EC");
+    gen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+    java.security.KeyPair otherPair = gen.generateKeyPair();
+    java.security.cert.X509Certificate unrelatedRoot = selfSignedCa(otherPair, "CN=Unrelated Root");
+    java.util.UUID aaguid = aaguidOfAttestation(obj);
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource source =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
+            java.util.List.of(
+                new com.crosscert.passkey.fido2.mds.MetadataEntry(
+                    aaguid,
+                    java.util.List.of(unrelatedRoot),
+                    java.util.List.of(
+                        com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED))));
+    assertThatThrownBy(
+            () -> new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, source))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.TRUST_PATH_INVALID);
+  }
+
+  // ----- Test helpers ---------------------------------------------------------------------------
+
+  private static java.util.UUID aaguidOfAttestation(AttestationObject obj) {
+    byte[] aaguidBytes = obj.authenticatorData().attestedCredentialData().aaguid();
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(aaguidBytes);
+    return new java.util.UUID(buf.getLong(), buf.getLong());
+  }
+
+  private static java.security.cert.X509Certificate leafOf(AttestationObject obj) throws Exception {
+    byte[] certDer = (byte[]) ((java.util.List<?>) obj.attestationStatement().get("x5c")).get(0);
+    return (java.security.cert.X509Certificate)
+        java.security.cert.CertificateFactory.getInstance("X.509")
+            .generateCertificate(new java.io.ByteArrayInputStream(certDer));
+  }
+
+  private static java.security.cert.X509Certificate selfSignedCa(
+      java.security.KeyPair pair, String dn) throws Exception {
+    java.time.Instant now = java.time.Instant.now();
+    org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder builder =
+        new org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
+            new org.bouncycastle.asn1.x500.X500Name(dn),
+            java.math.BigInteger.valueOf(System.nanoTime()),
+            java.util.Date.from(now.minus(1, java.time.temporal.ChronoUnit.DAYS)),
+            java.util.Date.from(now.plus(365, java.time.temporal.ChronoUnit.DAYS)),
+            new org.bouncycastle.asn1.x500.X500Name(dn),
+            pair.getPublic());
+    builder.addExtension(
+        org.bouncycastle.asn1.x509.Extension.basicConstraints,
+        true,
+        new org.bouncycastle.asn1.x509.BasicConstraints(true));
+    return new org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
+        .getCertificate(
+            builder.build(
+                new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA")
+                    .build(pair.getPrivate())));
+  }
+
   // ----- Fixture builder (Apple 패턴 재사용) ---------------------------------------------------
 
   private record Fixture(byte[] attestationObject, byte[] clientDataHash) {
