@@ -208,3 +208,47 @@ production cert-path 검증은 JCA `CertPathValidator`(JDK 표준)를 쓴다. Bo
 - ArchUnit Rule 7 통과 (nimbus 허용 주석 반영).
 - `./gradlew check` 전체 통과.
 - `docs/architecture.md` §11 변경 이력 갱신.
+
+## 11. Phase 4 상세 결정 (2026-05-23 brainstorming)
+
+Phase 3 완료 후 Phase 4 plan 작성을 위해 추가로 합의된 결정 사항. 위 §3·§5·§6와 일관되며 그것을 구체화한다.
+
+### 11.1 Task 묶음 전략
+verifier 3종(android-safetynet / fido-u2f / tpm)을 **먼저** 모두 추가한 뒤 strict 경로를 단일화하고 webauthn4j를 제거한다. 그래야 webauthn4j를 떼어내는 시점에 자체 코어가 6포맷 모두를 처리할 수 있어 회귀 위험이 최소화된다.
+
+### 11.2 TPM 지원 범위
+- **TPM 2.0만 완전 구현**. `attStmt.ver == "1.2"`은 `Fido2VerificationException(UNSUPPORTED_ATTESTATION_FORMAT)`로 거부한다. Windows Hello 등 상용 TPM은 모두 2.0이며 TPM 1.2는 2016년 이전 레거시 하드웨어용으로 현장에서 거의 보지 못한다 — YAGNI.
+- TPM 2.0 검증 단계: (1) `attStmt` 필수 필드 추출 + `ver=2.0` (2) `pubArea` 파싱 → credential public key와 동일성 (3) `certInfo` 파싱 → `magic == TPM_GENERATED_VALUE(0xFF544347)`, `type == TPM_ST_ATTEST_CERTIFY`, `extraData == SHA-256(authData || clientDataHash)`, `attested.name == TPMT_HA(SHA-256(pubArea))` (4) AIK cert(x5c[0])로 `sig`가 `certInfo` 서명했는지 (5) AIK cert 정합성 — v3, EKU에 `2.23.133.8.3`, SAN에 `2.23.133.2.{1,2,3}` (manufacturer/model/version), basicConstraints CA=false, AAGUID 확장 일치 (6) strict 시 x5c → MDS trust anchor PKIX.
+- TPM 이진 파서는 `fido2.tpm` 서브패키지로 분리(`TpmsAttest.parse`·`TpmtPublic.parse` 단위 테스트 가치 큼).
+
+### 11.3 골든 벡터 출처
+차등 테스트 교체용 골든 벡터는 다음 3계층 조합으로 구성한다:
+- **W3C WebAuthn L2·L3 명세 예제**: 라이선스 깨끗, binary-level 명시 — "외부 표준 입력 → 우리 코어 동일 결과"를 보장하는 핵심.
+- **BouncyCastle 자체 생성 (포맷별)**: Phase 3와 동일 패턴 — 6포맷 각각 self-signed cert + attestationObject 생성. 자체 빌드만으로 재현 가능.
+- **FIDO Alliance conformance 벡터 (공개 가능분, 포맷별 1~2개)**: 공식 근거 강화. 라이선스 확인 후 가능한 만큼만.
+- **실기기 캡처는 YAGNI** — Phase 4 범위 외, QA 환경에서 점진 수집.
+
+### 11.4 webauthn4j 제거 안전장치 — 단계적 제거
+import → config → provider delegate → controller 점검 → build.gradle 순으로 단계 분리. 각 단계 끝에서 `./gradlew check` 통과 확인. 의존성 파일 삭제(`build.gradle.kts`)는 **마지막**에 한다. 실패 시 원인 특정이 쉽고 git revert 한 커밋으로 되돌릴 수 있다.
+
+### 11.5 strict 경로 통합 테스트 폭
+신규 `RegistrationStrictIntegrationTest`(가칭)에 6개 fmt(packed/apple/android-key/android-safetynet/fido-u2f/tpm) 각각:
+- happy-path 1건 (해당 fmt가 MDS-등록된 AAGUID로 등록 성공)
+- 거부 1건 (MDS_TRUST_FAILED 또는 AUTHENTICATOR_REVOKED 중 fmt 특성에 맞는 것)
+
+= 총 12 test methods. `none`은 strict가 통과시켜야 하므로 별도 추가(1건). MDS BLOB fixture는 BouncyCastle로 생성한 자체 root CA + entries 묶음을 `src/test/resources/fido2/mds-blob-fixture.jws`로 고정.
+
+### 11.6 후속 클린업 포함 범위
+Phase 4에 포함:
+- `AttestationTestCerts` 공용 헬퍼 추출 (Apple/Android Key/Packed/신규 3종 테스트의 `selfSignedCa`/`leafOf`/`aaguidOfAttestation` 중복 제거)
+- `DerUtil` 단위 테스트 추가 (현재 verifier 테스트가 간접 커버 — 직접 커버 필요)
+- 기존 strict 테스트들의 인라인 FQN(`com.crosscert.passkey.fido2.mds.*`) → 정식 import 정리
+- `FailureReason.UNSUPPORTED_ALGORITHM` 정리 (미사용이면 enum에서 삭제, tpm에서 사용처 생긴다면 명시 사용)
+
+Phase 4에서 제외:
+- **cross-origin 정책**: `RegistrationVerificationResult.crossOrigin()` 값을 활용해 `RegistrationService`에서 정책 거부 결정 — webauthn4j 교체와 무관한 도메인 정책 변경이므로 별도 작업(Milestone C 또는 backlog).
+
+### 11.7 신규 `FailureReason` 값
+- `INVALID_ATTESTATION_FORMAT`: 신규 — `tpm` `ver=1.2` 등 verifier가 인식 가능하지만 정책상 거부.
+- `INVALID_TPM_STRUCTURE`: 신규 — TPMS_ATTEST / TPMT_PUBLIC 파싱 실패 또는 일관성 위반.
+- 기존 재사용: `TRUST_PATH_INVALID` / `MDS_TRUST_FAILED` / `AUTHENTICATOR_REVOKED` / `MDS_BLOB_INVALID` (이미 enum에 존재) / `ATTESTATION_INVALID` / `SIGNATURE_INVALID` / `UNSUPPORTED_ALGORITHM`(정리 대상).
