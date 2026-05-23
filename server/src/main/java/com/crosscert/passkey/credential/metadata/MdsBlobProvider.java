@@ -12,6 +12,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
@@ -31,16 +32,19 @@ public class MdsBlobProvider {
   private final MdsProperties props;
   private final RestClient restClient;
   private final X509Certificate rootCa;
+  private final ApplicationEventPublisher events;
   private final AtomicReference<MdsTrustAnchorSource> trustAnchorSource = new AtomicReference<>();
 
   @Getter private final AtomicReference<Instant> lastFetched = new AtomicReference<>();
   @Getter private final AtomicReference<MetadataBlob> lastBlob = new AtomicReference<>();
 
   @Autowired
-  public MdsBlobProvider(MdsProperties props, ResourceLoader resourceLoader) {
+  public MdsBlobProvider(
+      MdsProperties props, ResourceLoader resourceLoader, ApplicationEventPublisher events) {
     this.props = props;
     this.rootCa = loadRootCa(resourceLoader);
     this.restClient = RestClient.create();
+    this.events = events;
     log.info(
         "mds.provider.constructed url={} rootCaSubject={}",
         props.getBlobUrl(),
@@ -70,6 +74,7 @@ public class MdsBlobProvider {
           blob.entries().size(),
           blob.nextUpdate(),
           blob.serialNumber());
+      events.publishEvent(new MdsBlobRefreshedEvent(blob, Instant.now()));
       if (log.isDebugEnabled()) {
         for (com.crosscert.passkey.fido2.mds.MetadataEntry e : blob.entries()) {
           if (e.statusReports() != null
