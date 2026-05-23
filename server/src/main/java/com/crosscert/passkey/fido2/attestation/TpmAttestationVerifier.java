@@ -147,8 +147,7 @@ public final class TpmAttestationVerifier implements AttestationVerifier {
       verifier.update(certInfo);
       if (!verifier.verify(signature)) {
         throw new Fido2VerificationException(
-            FailureReason.ATTESTATION_INVALID,
-            "tpm attestation signature over certInfo is invalid");
+            FailureReason.SIGNATURE_INVALID, "tpm attestation signature over certInfo is invalid");
       }
 
       // (5) AIK certificate requirements per WebAuthn L3 §8.3.
@@ -420,15 +419,20 @@ public final class TpmAttestationVerifier implements AttestationVerifier {
     return aaguid;
   }
 
-  /** Maps a COSE algorithm identifier to a JCA algorithm name. */
+  /**
+   * Maps a COSE algorithm identifier to a JCA algorithm name.
+   *
+   * <p>Only COSE alg values listed in WebAuthn L3 §8.3 for tpm are supported: -7 (ES256) and -257
+   * (RS256). RS1 (-65535, SHA1withRSA) is intentionally NOT supported — SHA-1 is cryptographically
+   * deprecated and not listed in the spec.
+   */
   private static String jcaAlgorithmForCoseAlg(long coseAlg) throws Fido2VerificationException {
     return switch ((int) coseAlg) {
       case -7 -> "SHA256withECDSA";
       case -257 -> "SHA256withRSA";
-      case -65535 -> "SHA1withRSA";
       default ->
           throw new Fido2VerificationException(
-              FailureReason.ATTESTATION_INVALID, "tpm attestation unsupported alg: " + coseAlg);
+              FailureReason.UNSUPPORTED_ALGORITHM, "tpm attestation unsupported alg: " + coseAlg);
     };
   }
 

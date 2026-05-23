@@ -155,6 +155,29 @@ class TpmAttestationVerifierTest {
     assertThat(result.trustPathPresent()).isTrue();
   }
 
+  @Test
+  void rejects_unsupported_alg_with_unsupported_algorithm_reason() throws Exception {
+    // alg = -65535 (RS1 / SHA1withRSA) is not listed in WebAuthn L3 §8.3 for tpm.
+    TpmFixture f = TpmFixture.validRsa("example.com").withAlg(-65535L);
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.UNSUPPORTED_ALGORITHM);
+  }
+
+  @Test
+  void rejects_when_signature_invalid_with_signature_invalid_reason() throws Exception {
+    TpmFixture f = TpmFixture.validRsa("example.com").withTamperedSignature();
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.SIGNATURE_INVALID);
+  }
+
   private static byte[] sha256(byte[] data) throws Exception {
     return MessageDigest.getInstance("SHA-256").digest(data);
   }

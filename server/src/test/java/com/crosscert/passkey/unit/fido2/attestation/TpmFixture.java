@@ -165,6 +165,31 @@ final class TpmFixture {
     return rebuildAttObj(attStmt);
   }
 
+  /**
+   * Return a fixture with the attStmt {@code alg} field overridden to {@code coseAlg}. The sig and
+   * certInfo are left unchanged so this triggers the unsupported-algorithm path before any
+   * signature check.
+   */
+  TpmFixture withAlg(long coseAlg) throws Exception {
+    Map<Object, Object> attStmt = parseAttStmt();
+    attStmt.put("alg", coseAlg);
+    return rebuildAttObj(attStmt);
+  }
+
+  /**
+   * Return a fixture where the last byte of {@code sig} is XOR-flipped. This makes the signature
+   * syntactically valid (correct length) but cryptographically invalid, triggering
+   * SIGNATURE_INVALID.
+   */
+  TpmFixture withTamperedSignature() throws Exception {
+    Map<Object, Object> attStmt = parseAttStmt();
+    byte[] sig = (byte[]) attStmt.get("sig");
+    byte[] tampered = sig.clone();
+    tampered[tampered.length - 1] ^= (byte) 0xff;
+    attStmt.put("sig", tampered);
+    return rebuildAttObj(attStmt);
+  }
+
   // ── Static factories
   // ────────────────────────────────────────────────────────────────────────────
 
