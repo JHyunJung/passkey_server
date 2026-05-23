@@ -117,6 +117,40 @@ class AndroidKeyAttestationVerifierTest {
         .isEqualTo(FailureReason.TRUST_PATH_INVALID);
   }
 
+  @Test
+  void strict_android_key_attestation_rejects_unknown_aaguid() throws Exception {
+    Fixture f = Fixture.build(true, true);
+    AttestationObject obj = AttestationObject.parse(f.attestationObject);
+    // empty source — no entries at all → MDS_TRUST_FAILED
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource empty =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of());
+    assertThatThrownBy(
+            () -> new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, empty))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.MDS_TRUST_FAILED);
+  }
+
+  @Test
+  void strict_android_key_attestation_rejects_revoked_authenticator() throws Exception {
+    Fixture f = Fixture.build(true, true);
+    AttestationObject obj = AttestationObject.parse(f.attestationObject);
+    java.util.UUID aaguid = aaguidOfAttestation(obj);
+    java.security.cert.X509Certificate selfCert = leafOf(obj);
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource revokedSource =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
+            java.util.List.of(
+                new com.crosscert.passkey.fido2.mds.MetadataEntry(
+                    aaguid,
+                    java.util.List.of(selfCert),
+                    java.util.List.of(com.crosscert.passkey.fido2.mds.StatusReport.REVOKED))));
+    assertThatThrownBy(
+            () -> new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, revokedSource))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.AUTHENTICATOR_REVOKED);
+  }
+
   // ----- Test helpers ---------------------------------------------------------------------------
 
   private static java.util.UUID aaguidOfAttestation(AttestationObject obj) {

@@ -111,7 +111,7 @@ class AttestationVerifierTest {
     AttestationResult result =
         AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null);
     assertThat(result.format()).isEqualTo("packed");
-    assertThat(result.trustPathPresent()).isTrue();
+    assertThat(result.trustPathPresent()).isFalse();
   }
 
   @Test
@@ -131,7 +131,7 @@ class AttestationVerifierTest {
     AttestationResult result =
         AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null);
     assertThat(result.format()).isEqualTo("packed");
-    assertThat(result.trustPathPresent()).isTrue();
+    assertThat(result.trustPathPresent()).isFalse();
   }
 
   @Test

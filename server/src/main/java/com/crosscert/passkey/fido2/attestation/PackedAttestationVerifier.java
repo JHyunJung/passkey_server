@@ -144,7 +144,7 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
       if (trustAnchors != null) {
         verifyTrustAnchor(chain, acd, trustAnchors);
       }
-      return new AttestationResult("packed", true);
+      return new AttestationResult("packed", trustAnchors != null);
     } catch (Fido2VerificationException e) {
       throw e;
     } catch (CertificateException e) {

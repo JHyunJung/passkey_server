@@ -3,6 +3,7 @@ package com.crosscert.passkey.fido2.attestation;
 import com.crosscert.passkey.fido2.Fido2VerificationException;
 import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
 import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
+import com.crosscert.passkey.fido2.mds.MetadataEntry;
 import com.crosscert.passkey.fido2.model.AttestationObject;
 import com.crosscert.passkey.fido2.model.AttestedCredentialData;
 import java.io.ByteArrayInputStream;
@@ -16,6 +17,7 @@ import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -120,6 +122,17 @@ public final class AndroidKeyAttestationVerifier implements AttestationVerifier 
           chain.add((X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der)));
         }
         UUID aaguid = aaguidOf(acd);
+        Optional<MetadataEntry> entry = trustAnchors.findEntry(aaguid);
+        if (entry.isEmpty()) {
+          throw new Fido2VerificationException(
+              FailureReason.MDS_TRUST_FAILED,
+              "no MDS entry for AAGUID " + aaguid + " — android-key authenticator not in metadata");
+        }
+        if (entry.get().isRevoked()) {
+          throw new Fido2VerificationException(
+              FailureReason.AUTHENTICATOR_REVOKED,
+              "android-key authenticator AAGUID " + aaguid + " is revoked or compromised per MDS");
+        }
         if (!AttestationCertPathValidator.validates(chain, trustAnchors.trustAnchors(aaguid))) {
           throw new Fido2VerificationException(
               FailureReason.TRUST_PATH_INVALID,
