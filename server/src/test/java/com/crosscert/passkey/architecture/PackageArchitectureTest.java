@@ -13,7 +13,10 @@ import com.tngtech.archunit.lang.SimpleConditionEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.bind.annotation.RequestMapping;
 
-/** M1 architecture invariants. Seven rules — see Plan §3.4 (Rule 7 added for the fido2 core). */
+/**
+ * M1 architecture invariants. Eight rules — see Plan §3.4 (Rule 7: fido2 core purity; Rule 8: no
+ * webauthn4j anywhere).
+ */
 class PackageArchitectureTest {
 
   private static final String ROOT = "com.crosscert.passkey";
@@ -121,9 +124,10 @@ class PackageArchitectureTest {
   // Rule 7: the fido2 core is a pure WebAuthn implementation — it must not depend on any domain
   // package, on Spring, or on the application's exception types. Only java.*/javax.* (JCA, LDAP
   // name parsing) + the fido2 package itself + Jackson (clientDataJSON parsing) + nimbus-jose-jwt
-  // (MDS3 BLOB JWS verification, Phase 3) + the test-only BouncyCastle attestation-cert builder
-  // are permitted. The domain packages are fully qualified under ROOT so the pattern does not
-  // accidentally match JDK packages such as javax.security.auth.
+  // (MDS3 BLOB JWS verification + android-safetynet JWS verification) are permitted. Milestone B
+  // Phase 4 removed webauthn4j entirely from production (see Rule 8); fido2 was already forbidden
+  // it. The domain packages are fully qualified under ROOT so the pattern does not accidentally
+  // match JDK packages such as javax.security.auth.
   @Test
   void fido2_core_is_pure() {
     noClasses()
@@ -141,6 +145,21 @@ class PackageArchitectureTest {
             ROOT + ".infrastructure..",
             ROOT + ".ratelimit..",
             "org.springframework..")
+        .check(CLASSES);
+  }
+
+  // Rule 8: production code (everything under ROOT) must not import anything from com.webauthn4j —
+  // Milestone B Phase 4 removed the dependency entirely. The fido2 core was already forbidden by
+  // Rule 7; this rule extends the ban to credential/admin/etc. domain code, guarding against
+  // accidental re-introduction via a future merge that resurrects the dependency.
+  @Test
+  void no_production_code_depends_on_webauthn4j() {
+    noClasses()
+        .that()
+        .resideInAPackage(ROOT + "..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("com.webauthn4j..")
         .check(CLASSES);
   }
 
