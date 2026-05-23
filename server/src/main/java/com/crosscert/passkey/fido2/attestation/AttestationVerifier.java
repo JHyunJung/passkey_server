@@ -19,7 +19,8 @@ public sealed interface AttestationVerifier
         PackedAttestationVerifier,
         AppleAnonymousAttestationVerifier,
         AndroidKeyAttestationVerifier,
-        AndroidSafetyNetAttestationVerifier {
+        AndroidSafetyNetAttestationVerifier,
+        FidoU2fAttestationVerifier {
 
   /** The {@code fmt} string this verifier handles. */
   String format();
