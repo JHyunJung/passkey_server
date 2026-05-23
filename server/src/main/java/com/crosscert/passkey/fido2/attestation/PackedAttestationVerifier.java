@@ -315,15 +315,22 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
         throw new Fido2VerificationException(
             FailureReason.ATTESTATION_INVALID, "packed self-attestation signature invalid");
       }
-      // Strict mode: even self-attesting authenticators must appear in the MDS registry.
+      // Strict mode: even self-attesting authenticators must appear in the MDS registry and must
+      // not be revoked.
       if (trustAnchors != null) {
         UUID aaguid = aaguidOf(acd);
-        if (trustAnchors.findEntry(aaguid).isEmpty()) {
+        Optional<MetadataEntry> entry = trustAnchors.findEntry(aaguid);
+        if (entry.isEmpty()) {
           throw new Fido2VerificationException(
               FailureReason.MDS_TRUST_FAILED,
               "no MDS entry for AAGUID "
                   + aaguid
                   + " — self-attesting authenticator not in metadata");
+        }
+        if (entry.get().isRevoked()) {
+          throw new Fido2VerificationException(
+              FailureReason.AUTHENTICATOR_REVOKED,
+              "packed self-attestation authenticator AAGUID " + aaguid + " is revoked per MDS");
         }
       }
       return new AttestationResult("packed", trustAnchors != null);
