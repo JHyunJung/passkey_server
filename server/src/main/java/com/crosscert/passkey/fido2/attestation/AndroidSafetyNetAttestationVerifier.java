@@ -40,7 +40,9 @@ import java.util.UUID;
  */
 public final class AndroidSafetyNetAttestationVerifier implements AttestationVerifier {
 
-  private static final String EXPECTED_LEAF_SAN = "attest.android.com";
+  public static final String EXPECTED_LEAF_SAN = "attest.android.com";
+
+  private static final int SAN_TYPE_DNS_NAME = 2; // RFC 5280 §4.2.1.6
 
   @Override
   public String format() {
@@ -53,6 +55,12 @@ public final class AndroidSafetyNetAttestationVerifier implements AttestationVer
       throws Fido2VerificationException {
     try {
       Map<?, ?> attStmt = attestationObject.attestationStatement();
+      Object verObj = attStmt.get("ver");
+      if (!(verObj instanceof String verStr) || verStr.isBlank()) {
+        throw new Fido2VerificationException(
+            FailureReason.ATTESTATION_INVALID,
+            "android-safetynet attestation missing or empty ver");
+      }
       Object responseObj = attStmt.get("response");
       if (!(responseObj instanceof byte[] responseBytes)) {
         throw new Fido2VerificationException(
@@ -173,9 +181,9 @@ public final class AndroidSafetyNetAttestationVerifier implements AttestationVer
       return false;
     }
     for (List<?> entry : sans) {
-      // Each SAN entry is [type, value]. Type 2 = dNSName.
+      // Each SAN entry is [type, value]. Type SAN_TYPE_DNS_NAME = dNSName.
       if (entry.size() >= 2
-          && Objects.equals(entry.get(0), 2)
+          && Objects.equals(entry.get(0), SAN_TYPE_DNS_NAME)
           && expected.equalsIgnoreCase(String.valueOf(entry.get(1)))) {
         return true;
       }

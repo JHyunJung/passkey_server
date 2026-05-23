@@ -17,6 +17,7 @@ import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.util.Base64;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -31,6 +32,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.Extension;
@@ -91,8 +93,149 @@ class AndroidSafetyNetAttestationVerifierTest {
         .isEqualTo(FailureReason.ATTESTATION_INVALID);
   }
 
+  // I2: leaf cert with non-RSA (EC) key — RSAPublicKey cast fails → ATTESTATION_INVALID
+  @Test
+  void rejects_when_leaf_cert_key_is_not_rsa() throws Exception {
+    // EC leaf still has SAN=attest.android.com so the SAN check passes, but the RSA cast fails.
+    SafetyNetFixture f =
+        SafetyNetFixture.withEcLeaf(
+            AndroidSafetyNetAttestationVerifier.EXPECTED_LEAF_SAN, "example.com");
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.ATTESTATION_INVALID);
+  }
+
+  // I3: tampered JWS signature → SIGNATURE_INVALID
+  @Test
+  void rejects_when_jws_signature_invalid() throws Exception {
+    SafetyNetFixture f = SafetyNetFixture.withTamperedJwsSignature("example.com");
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.SIGNATURE_INVALID);
+  }
+
+  // I4: basicIntegrity=false → ATTESTATION_INVALID
+  @Test
+  void rejects_when_basic_integrity_false() throws Exception {
+    SafetyNetFixture f = SafetyNetFixture.withBasicIntegrity(false, "example.com");
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.ATTESTATION_INVALID);
+  }
+
+  // I5a: strict mode — unknown AAGUID → MDS_TRUST_FAILED
+  @Test
+  void strict_rejects_unknown_aaguid() throws Exception {
+    SafetyNetFixture f = SafetyNetFixture.valid("example.com");
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource empty =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), empty))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.MDS_TRUST_FAILED);
+  }
+
+  // I5b: strict mode — revoked AAGUID → AUTHENTICATOR_REVOKED
+  @Test
+  void strict_rejects_revoked_aaguid() throws Exception {
+    SafetyNetFixture f = SafetyNetFixture.valid("example.com");
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+    UUID aaguid = aaguidOfAttestation(obj);
+    // Use the fixture's own leaf cert as the trust anchor cert (chain validates) — but status
+    // REVOKED.
+    X509Certificate leafCert = safetyNetLeafOf(obj);
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource revokedSource =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
+            java.util.List.of(
+                new com.crosscert.passkey.fido2.mds.MetadataEntry(
+                    aaguid,
+                    java.util.List.of(leafCert),
+                    java.util.List.of(com.crosscert.passkey.fido2.mds.StatusReport.REVOKED))));
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), revokedSource))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.AUTHENTICATOR_REVOKED);
+  }
+
+  // I5c: strict mode happy path — chain validates to MDS trust anchor → trustPathPresent=true
+  @Test
+  void strict_passes_with_matching_trust_anchor() throws Exception {
+    // Build a CA key pair and use it as both the leaf cert issuer and the MDS trust anchor.
+    KeyPairGenerator rsaGen = KeyPairGenerator.getInstance("RSA");
+    rsaGen.initialize(2048);
+    KeyPair caPair = rsaGen.generateKeyPair();
+    X509Certificate caCert = buildSelfSignedCa(caPair, "CN=SafetyNet Test CA");
+
+    SafetyNetFixture f = SafetyNetFixture.withCa(caPair, caCert, "example.com");
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+    UUID aaguid = aaguidOfAttestation(obj);
+
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource source =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
+            java.util.List.of(
+                new com.crosscert.passkey.fido2.mds.MetadataEntry(
+                    aaguid,
+                    java.util.List.of(caCert),
+                    java.util.List.of(
+                        com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED))));
+
+    AttestationResult result = verifier.verify(obj, sha256(f.clientDataJson()), source);
+    assertThat(result.format()).isEqualTo("android-safetynet");
+    assertThat(result.trustPathPresent()).isTrue();
+  }
+
+  // ------ helpers -------------------------------------------------------------------------------
+
   private static byte[] sha256(byte[] data) throws Exception {
     return MessageDigest.getInstance("SHA-256").digest(data);
+  }
+
+  private static UUID aaguidOfAttestation(AttestationObject obj) {
+    byte[] aaguidBytes = obj.authenticatorData().attestedCredentialData().aaguid();
+    ByteBuffer buf = ByteBuffer.wrap(aaguidBytes);
+    return new UUID(buf.getLong(), buf.getLong());
+  }
+
+  /**
+   * Extract the leaf X.509 certificate from the JWS x5c header of a SafetyNet attestation object.
+   * The JWS compact is stored as the {@code response} byte[] in attStmt.
+   */
+  private static X509Certificate safetyNetLeafOf(AttestationObject obj) throws Exception {
+    byte[] responseBytes = (byte[]) obj.attestationStatement().get("response");
+    String compact = new String(responseBytes, StandardCharsets.UTF_8);
+    JWSObject jws = JWSObject.parse(compact);
+    Base64 b64 = jws.getHeader().getX509CertChain().iterator().next();
+    return (X509Certificate)
+        java.security.cert.CertificateFactory.getInstance("X.509")
+            .generateCertificate(new java.io.ByteArrayInputStream(b64.decode()));
+  }
+
+  private static X509Certificate buildSelfSignedCa(KeyPair pair, String dn) throws Exception {
+    Instant now = Instant.now();
+    JcaX509v3CertificateBuilder builder =
+        new JcaX509v3CertificateBuilder(
+            new X500Name(dn),
+            BigInteger.valueOf(System.nanoTime()),
+            Date.from(now.minus(1, ChronoUnit.DAYS)),
+            Date.from(now.plus(365, ChronoUnit.DAYS)),
+            new X500Name(dn),
+            pair.getPublic());
+    builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
+    return new JcaX509CertificateConverter()
+        .getCertificate(
+            builder.build(new JcaContentSignerBuilder("SHA256withRSA").build(pair.getPrivate())));
   }
 
   // -----------------------------------------------------------------------------------
@@ -104,29 +247,106 @@ class AndroidSafetyNetAttestationVerifierTest {
 
     /** Valid fixture with correct nonce, ctsProfileMatch=true, SAN=attest.android.com. */
     static SafetyNetFixture valid(String rpId) throws Exception {
-      return build("attest.android.com", true, true, rpId);
+      return build(
+          AndroidSafetyNetAttestationVerifier.EXPECTED_LEAF_SAN,
+          true,
+          true,
+          rpId,
+          false,
+          null,
+          null);
     }
 
     /** Fixture with the nonce last byte XOR'd — nonce mismatch. */
     static SafetyNetFixture withTamperedNonce(String rpId) throws Exception {
-      return build("attest.android.com", true, true, rpId, true);
+      return build(
+          AndroidSafetyNetAttestationVerifier.EXPECTED_LEAF_SAN,
+          true,
+          true,
+          rpId,
+          true,
+          null,
+          null);
     }
 
     /** Fixture with ctsProfileMatch overridden to the given value. */
     static SafetyNetFixture withCtsProfileMatch(boolean ctsProfileMatch, String rpId)
         throws Exception {
-      return build("attest.android.com", ctsProfileMatch, true, rpId);
+      return build(
+          AndroidSafetyNetAttestationVerifier.EXPECTED_LEAF_SAN,
+          ctsProfileMatch,
+          true,
+          rpId,
+          false,
+          null,
+          null);
+    }
+
+    /** Fixture with basicIntegrity overridden to the given value. */
+    static SafetyNetFixture withBasicIntegrity(boolean basicIntegrity, String rpId)
+        throws Exception {
+      return build(
+          AndroidSafetyNetAttestationVerifier.EXPECTED_LEAF_SAN,
+          true,
+          basicIntegrity,
+          rpId,
+          false,
+          null,
+          null);
     }
 
     /** Fixture with a custom leaf SAN (not attest.android.com). */
     static SafetyNetFixture withLeafSan(String leafSan, String rpId) throws Exception {
-      return build(leafSan, true, true, rpId);
+      return build(leafSan, true, true, rpId, false, null, null);
     }
 
-    private static SafetyNetFixture build(
-        String leafSan, boolean ctsProfileMatch, boolean basicIntegrity, String rpId)
+    /**
+     * Fixture with an EC P-256 leaf cert whose SAN is {@code attest.android.com} — the SAN check
+     * passes but the {@code (RSAPublicKey)} cast in the verifier fails with ClassCastException,
+     * which lands in the outer catch as ATTESTATION_INVALID.
+     */
+    static SafetyNetFixture withEcLeaf(String leafSan, String rpId) throws Exception {
+      return build(leafSan, true, true, rpId, false, null, null, true /* ecLeaf */);
+    }
+
+    /**
+     * Fixture with a valid JWS whose third dot-separated segment (signature) has one byte mutated —
+     * signature verification returns false → SIGNATURE_INVALID.
+     */
+    static SafetyNetFixture withTamperedJwsSignature(String rpId) throws Exception {
+      return buildWithTamperedSignature(rpId);
+    }
+
+    /**
+     * Fixture where the JWS leaf cert was signed by {@code caPair}/{@code caCert} instead of being
+     * self-signed. Use {@code caCert} as the MDS trust anchor to make the strict-mode chain
+     * validation pass.
+     */
+    static SafetyNetFixture withCa(KeyPair caPair, X509Certificate caCert, String rpId)
         throws Exception {
-      return build(leafSan, ctsProfileMatch, basicIntegrity, rpId, false);
+      return build(
+          AndroidSafetyNetAttestationVerifier.EXPECTED_LEAF_SAN,
+          true,
+          true,
+          rpId,
+          false,
+          caPair,
+          caCert);
+    }
+
+    // ------ private build methods -------------------------------------------------------------
+
+    private static SafetyNetFixture build(
+        String leafSan,
+        boolean ctsProfileMatch,
+        boolean basicIntegrity,
+        String rpId,
+        boolean tamperNonce,
+        KeyPair caKeyPair,
+        X509Certificate caCert)
+        throws Exception {
+      return build(
+          leafSan, ctsProfileMatch, basicIntegrity, rpId, tamperNonce, caKeyPair, caCert, false);
     }
 
     private static SafetyNetFixture build(
@@ -134,7 +354,10 @@ class AndroidSafetyNetAttestationVerifierTest {
         boolean ctsProfileMatch,
         boolean basicIntegrity,
         String rpId,
-        boolean tamperNonce)
+        boolean tamperNonce,
+        KeyPair caKeyPair,
+        X509Certificate caCert,
+        boolean ecLeaf)
         throws Exception {
 
       // 1. EC P-256 credential key pair.
@@ -193,13 +416,42 @@ class AndroidSafetyNetAttestationVerifierTest {
       }
       String nonce = java.util.Base64.getEncoder().encodeToString(nonceBytes);
 
-      // 6. RSA-2048 self-signed leaf cert with SAN dNSName=leafSan.
-      KeyPairGenerator rsaGen = KeyPairGenerator.getInstance("RSA");
-      rsaGen.initialize(2048);
-      KeyPair rsaPair = rsaGen.generateKeyPair();
-      X509Certificate leafCert = buildRsaLeafCert(rsaPair, leafSan);
+      // 6. Build leaf cert — RSA-2048 by default; EC P-256 if ecLeaf=true.
+      List<Base64> x5cList;
+      RSAPrivateKey jwsSigningKey;
+      if (ecLeaf) {
+        // EC leaf: SAN will match attest.android.com but RSAPublicKey cast will throw.
+        KeyPairGenerator ecLeafGen = KeyPairGenerator.getInstance("EC");
+        ecLeafGen.initialize(new ECGenParameterSpec("secp256r1"));
+        KeyPair ecLeafPair = ecLeafGen.generateKeyPair();
+        X509Certificate ecLeafCert = buildEcLeafCert(ecLeafPair, leafSan);
+        x5cList = List.of(Base64.encode(ecLeafCert.getEncoded()));
+        // We still need an RSA key to sign the JWS header+payload — but the verifier will fail
+        // before even checking the signature (ClassCastException on the EC public key).
+        // Use a temporary RSA key just to produce a parseable JWS.
+        KeyPairGenerator rsaTmp = KeyPairGenerator.getInstance("RSA");
+        rsaTmp.initialize(2048);
+        KeyPair tmpRsa = rsaTmp.generateKeyPair();
+        jwsSigningKey = (RSAPrivateKey) tmpRsa.getPrivate();
+      } else if (caKeyPair != null) {
+        // CA-signed leaf: leaf private key signs JWS; leaf cert is issued by CA.
+        KeyPairGenerator rsaGen = KeyPairGenerator.getInstance("RSA");
+        rsaGen.initialize(2048);
+        KeyPair leafRsaPair = rsaGen.generateKeyPair();
+        X509Certificate leafCert = buildCaSignedLeafCert(leafRsaPair, caKeyPair, caCert, leafSan);
+        x5cList = List.of(Base64.encode(leafCert.getEncoded()), Base64.encode(caCert.getEncoded()));
+        jwsSigningKey = (RSAPrivateKey) leafRsaPair.getPrivate();
+      } else {
+        // Self-signed RSA-2048 leaf.
+        KeyPairGenerator rsaGen = KeyPairGenerator.getInstance("RSA");
+        rsaGen.initialize(2048);
+        KeyPair rsaPair = rsaGen.generateKeyPair();
+        X509Certificate leafCert = buildRsaLeafCert(rsaPair, leafSan);
+        x5cList = List.of(Base64.encode(leafCert.getEncoded()));
+        jwsSigningKey = (RSAPrivateKey) rsaPair.getPrivate();
+      }
 
-      // 7. Build JWS (nimbus RS256): header alg=RS256, x5c=[leaf]; payload JSON.
+      // 7. Build JWS (nimbus RS256): header alg=RS256, x5c=[...]; payload JSON.
       Map<String, Object> payloadMap = new LinkedHashMap<>();
       payloadMap.put("nonce", nonce);
       payloadMap.put("ctsProfileMatch", ctsProfileMatch);
@@ -207,14 +459,11 @@ class AndroidSafetyNetAttestationVerifierTest {
       payloadMap.put("timestampMs", System.currentTimeMillis());
 
       JWSHeader jwsHeader =
-          new JWSHeader.Builder(JWSAlgorithm.RS256)
-              .x509CertChain(List.of(Base64.encode(leafCert.getEncoded())))
-              .build();
+          new JWSHeader.Builder(JWSAlgorithm.RS256).x509CertChain(x5cList).build();
 
-      // Serialize payload as JSON string manually to avoid Jackson dependency in test path.
       String payloadJson = mapToJson(payloadMap);
       JWSObject jwsObject = new JWSObject(jwsHeader, new Payload(payloadJson));
-      jwsObject.sign(new RSASSASigner((RSAPrivateKey) rsaPair.getPrivate()));
+      jwsObject.sign(new RSASSASigner(jwsSigningKey));
       byte[] responseBytes = jwsObject.serialize().getBytes(StandardCharsets.UTF_8);
 
       // 8. attestationObject CBOR: {fmt, attStmt:{ver, response}, authData}.
@@ -232,20 +481,72 @@ class AndroidSafetyNetAttestationVerifierTest {
     }
 
     /**
+     * Build a fixture identical to {@code valid()} but with one byte of the JWS signature segment
+     * (the third dot-separated part) flipped — signature verification returns false.
+     */
+    private static SafetyNetFixture buildWithTamperedSignature(String rpId) throws Exception {
+      // Build valid first to get a clean fixture byte array.
+      SafetyNetFixture valid = valid(rpId);
+      // Re-parse the attestation object to retrieve the JWS compact string.
+      AttestationObject parsed = AttestationObject.parse(valid.attestationObject());
+      byte[] responseBytes = (byte[]) parsed.attestationStatement().get("response");
+      String compact = new String(responseBytes, StandardCharsets.UTF_8);
+
+      // Mutate one byte in the signature segment (third dot-separated part).
+      String[] parts = compact.split("\\.", -1);
+      // parts[2] is the Base64URL-encoded signature.
+      byte[] sigBytes = parts[2].getBytes(StandardCharsets.UTF_8);
+      sigBytes[sigBytes.length / 2] ^= (byte) 0x01; // flip one bit
+      String tampered =
+          parts[0] + "." + parts[1] + "." + new String(sigBytes, StandardCharsets.UTF_8);
+
+      byte[] tamperedResponseBytes = tampered.getBytes(StandardCharsets.UTF_8);
+
+      // Re-encode attStmt with tampered response.
+      Map<Object, Object> attStmt = new LinkedHashMap<>();
+      attStmt.put("ver", "19283746");
+      attStmt.put("response", tamperedResponseBytes);
+
+      Map<Object, Object> aoMap = new LinkedHashMap<>();
+      aoMap.put("fmt", "android-safetynet");
+      aoMap.put("attStmt", attStmt);
+      aoMap.put("authData", parsed.authenticatorData().rawBytes());
+      byte[] attestationObject = CborTestEncoder.encodeMap(aoMap);
+
+      return new SafetyNetFixture(attestationObject, valid.clientDataJson());
+    }
+
+    /**
      * Build a self-signed RSA-2048 leaf cert with SAN dNSName set to {@code san} and subject
      * CN="SafetyNet Test Leaf". Basic Constraints CA=false.
      */
     private static X509Certificate buildRsaLeafCert(KeyPair rsaPair, String san) throws Exception {
+      return buildRsaLeafCertIssuedBy(rsaPair, rsaPair, null, san);
+    }
+
+    /** Build an RSA leaf cert issued and signed by {@code caPair}/{@code caCert}. */
+    private static X509Certificate buildCaSignedLeafCert(
+        KeyPair leafPair, KeyPair caPair, X509Certificate caCert, String san) throws Exception {
+      return buildRsaLeafCertIssuedBy(leafPair, caPair, caCert, san);
+    }
+
+    private static X509Certificate buildRsaLeafCertIssuedBy(
+        KeyPair leafPair, KeyPair signingPair, X509Certificate issuerCert, String san)
+        throws Exception {
       Instant now = Instant.now();
       X500Name subject = new X500Name("CN=SafetyNet Test Leaf");
+      X500Name issuerDn =
+          issuerCert != null
+              ? new X500Name(issuerCert.getSubjectX500Principal().getName())
+              : subject;
       JcaX509v3CertificateBuilder builder =
           new JcaX509v3CertificateBuilder(
-              subject,
+              issuerDn,
               BigInteger.valueOf(System.nanoTime()),
               Date.from(now.minus(1, ChronoUnit.DAYS)),
               Date.from(now.plus(365, ChronoUnit.DAYS)),
               subject,
-              rsaPair.getPublic());
+              leafPair.getPublic());
       builder.addExtension(Extension.basicConstraints, false, new BasicConstraints(false));
       builder.addExtension(
           Extension.subjectAlternativeName,
@@ -254,7 +555,33 @@ class AndroidSafetyNetAttestationVerifierTest {
       return new JcaX509CertificateConverter()
           .getCertificate(
               builder.build(
-                  new JcaContentSignerBuilder("SHA256withRSA").build(rsaPair.getPrivate())));
+                  new JcaContentSignerBuilder("SHA256withRSA").build(signingPair.getPrivate())));
+    }
+
+    /**
+     * Build a self-signed EC P-256 leaf cert with SAN dNSName set to {@code san}. The verifier
+     * expects RSAPublicKey; the cast will fail → ClassCastException → ATTESTATION_INVALID.
+     */
+    private static X509Certificate buildEcLeafCert(KeyPair ecPair, String san) throws Exception {
+      Instant now = Instant.now();
+      X500Name subject = new X500Name("CN=SafetyNet EC Test Leaf");
+      JcaX509v3CertificateBuilder builder =
+          new JcaX509v3CertificateBuilder(
+              subject,
+              BigInteger.valueOf(System.nanoTime()),
+              Date.from(now.minus(1, ChronoUnit.DAYS)),
+              Date.from(now.plus(365, ChronoUnit.DAYS)),
+              subject,
+              ecPair.getPublic());
+      builder.addExtension(Extension.basicConstraints, false, new BasicConstraints(false));
+      builder.addExtension(
+          Extension.subjectAlternativeName,
+          false,
+          new GeneralNames(new GeneralName(GeneralName.dNSName, san)));
+      return new JcaX509CertificateConverter()
+          .getCertificate(
+              builder.build(
+                  new JcaContentSignerBuilder("SHA256withECDSA").build(ecPair.getPrivate())));
     }
 
     private static byte[] coordinate(BigInteger v) {
