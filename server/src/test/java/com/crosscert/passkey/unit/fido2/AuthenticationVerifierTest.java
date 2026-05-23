@@ -1,0 +1,338 @@
+package com.crosscert.passkey.unit.fido2;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import com.crosscert.passkey.fido2.AuthenticationVerificationRequest;
+import com.crosscert.passkey.fido2.AuthenticationVerificationResult;
+import com.crosscert.passkey.fido2.AuthenticationVerifier;
+import com.crosscert.passkey.fido2.Fido2VerificationException;
+import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
+import java.security.Signature;
+import java.security.interfaces.ECPublicKey;
+import java.security.spec.ECGenParameterSpec;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+class AuthenticationVerifierTest {
+
+  private static final Base64.Encoder B64URL = Base64.getUrlEncoder().withoutPadding();
+
+  @Test
+  void verifies_a_valid_assertion() throws Exception {
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationResult result = new AuthenticationVerifier().verify(f.request(true));
+    assertThat(result.newSignCount()).isEqualTo(7L);
+    assertThat(result.userVerified()).isTrue();
+  }
+
+  @Test
+  void rejects_challenge_mismatch() throws Exception {
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest req =
+        f.requestWithChallenge("d3JvbmctY2hhbGxlbmdl".getBytes());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.CHALLENGE_MISMATCH);
+  }
+
+  @Test
+  void rejects_origin_mismatch() throws Exception {
+    Fixture f = new Fixture("https://evil.com", "example.com", true, true);
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(f.request(true)))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.ORIGIN_MISMATCH);
+  }
+
+  @Test
+  void rejects_missing_uv_when_required() throws Exception {
+    Fixture f = new Fixture("https://example.com", "example.com", true, false);
+    AuthenticationVerificationRequest req = f.requestUvRequired();
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.UV_FLAG_REQUIRED);
+  }
+
+  @Test
+  void rejects_bad_signature() throws Exception {
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(f.request(false)))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.SIGNATURE_INVALID);
+  }
+
+  @Test
+  void rejects_missing_up_flag() throws Exception {
+    // up=false — user-presence 플래그 미설정.
+    Fixture f = new Fixture("https://example.com", "example.com", false, true);
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(f.request(true)))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.UP_FLAG_MISSING);
+  }
+
+  @Test
+  void rejects_rp_id_hash_mismatch() throws Exception {
+    // fixture는 rpId "example.com"으로 rpIdHash를 만들지만, 요청의 expectedRpId는 다른 값.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            base.authenticatorData(),
+            base.clientDataJson(),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            "other-rp.com",
+            base.storedCoseKeyBytes(),
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.RPID_HASH_MISMATCH);
+  }
+
+  @Test
+  void rejects_wrong_ceremony_type() throws Exception {
+    // clientDataJson의 type이 webauthn.create — 인증이 아닌 등록 type.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    String wrongTypeJson =
+        "{\"type\":\"webauthn.create\",\"challenge\":\""
+            + B64URL.encodeToString("Y2hhbGxlbmdl".getBytes())
+            + "\",\"origin\":\"https://example.com\"}";
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            base.authenticatorData(),
+            wrongTypeJson.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            base.expectedRpId(),
+            base.storedCoseKeyBytes(),
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.WRONG_CEREMONY_TYPE);
+  }
+
+  @Test
+  void rejects_malformed_authenticator_data() throws Exception {
+    // 37바이트 미만의 authenticatorData.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            new byte[10],
+            base.clientDataJson(),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            base.expectedRpId(),
+            base.storedCoseKeyBytes(),
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.MALFORMED_CBOR);
+  }
+
+  @Test
+  void rejects_corrupted_stored_cose_key() throws Exception {
+    // storedCoseKeyBytes가 손상된 바이트 — AttestedCredentialData.parse() 실패.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationRequest base = f.request(true);
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            base.authenticatorData(),
+            base.clientDataJson(),
+            base.signature(),
+            base.expectedChallenge(),
+            base.expectedOrigins(),
+            base.expectedRpId(),
+            new byte[] {1, 2, 3}, // 손상 — 18바이트 헤더 미만
+            base.userVerificationRequired());
+    assertThatThrownBy(() -> new AuthenticationVerifier().verify(req))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.MALFORMED_CBOR);
+  }
+
+  @Test
+  void rejects_null_inputs() {
+    assertThatThrownBy(
+            () ->
+                new AuthenticationVerifier()
+                    .verify(
+                        new AuthenticationVerificationRequest(
+                            null, null, null, null, null, null, null, false)))
+        .isInstanceOf(Fido2VerificationException.class);
+  }
+
+  @Test
+  void crossOrigin_true_in_client_data_is_exposed_in_result() throws Exception {
+    // clientDataJSON with crossOrigin:true — core surfaces the value, caller decides policy.
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    // Rebuild clientDataJson to include "crossOrigin":true.
+    String challengeB64 = B64URL.encodeToString(f.challenge);
+    String json =
+        "{\"type\":\"webauthn.get\",\"challenge\":\""
+            + challengeB64
+            + "\",\"origin\":\"https://example.com\",\"crossOrigin\":true}";
+    byte[] crossOriginClientData = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    // Re-sign with new clientDataJson.
+    byte[] clientHash =
+        java.security.MessageDigest.getInstance("SHA-256").digest(crossOriginClientData);
+    java.io.ByteArrayOutputStream signed = new java.io.ByteArrayOutputStream();
+    signed.writeBytes(f.authData);
+    signed.writeBytes(clientHash);
+    java.security.Signature signer = java.security.Signature.getInstance("SHA256withECDSA");
+    signer.initSign(f.keyPair.getPrivate());
+    signer.update(signed.toByteArray());
+    byte[] sig = signer.sign();
+
+    AuthenticationVerificationRequest req =
+        new AuthenticationVerificationRequest(
+            f.authData,
+            crossOriginClientData,
+            sig,
+            f.challenge,
+            java.util.List.of("https://example.com"),
+            f.rpId,
+            f.coseKey,
+            false);
+    AuthenticationVerificationResult result = new AuthenticationVerifier().verify(req);
+    assertThat(result.crossOrigin()).isTrue();
+  }
+
+  @Test
+  void crossOrigin_absent_defaults_to_false() throws Exception {
+    Fixture f = new Fixture("https://example.com", "example.com", true, true);
+    AuthenticationVerificationResult result = new AuthenticationVerifier().verify(f.request(true));
+    assertThat(result.crossOrigin()).isFalse();
+  }
+
+  /** Builds a self-consistent assertion: real EC key, real signature over authData||clientHash. */
+  private static final class Fixture {
+    final KeyPair keyPair;
+    final byte[] coseKey;
+    final byte[] authData;
+    final byte[] clientDataJson;
+    final byte[] challenge = "Y2hhbGxlbmdl".getBytes();
+    final String rpId;
+
+    Fixture(String origin, String rpId, boolean up, boolean uv) throws Exception {
+      this.rpId = rpId;
+      KeyPairGenerator gen = KeyPairGenerator.getInstance("EC");
+      gen.initialize(new ECGenParameterSpec("secp256r1"));
+      this.keyPair = gen.generateKeyPair();
+      this.coseKey = es256CoseKey((ECPublicKey) keyPair.getPublic());
+
+      byte[] rpIdHash = MessageDigest.getInstance("SHA-256").digest(rpId.getBytes());
+      ByteArrayOutputStream ad = new ByteArrayOutputStream();
+      ad.writeBytes(rpIdHash);
+      int flags = (up ? 0x01 : 0) | (uv ? 0x04 : 0);
+      ad.write(flags);
+      ad.writeBytes(new byte[] {0, 0, 0, 7}); // signCount = 7
+      this.authData = ad.toByteArray();
+
+      String json =
+          "{\"type\":\"webauthn.get\",\"challenge\":\""
+              + B64URL.encodeToString(challenge)
+              + "\",\"origin\":\""
+              + origin
+              + "\"}";
+      this.clientDataJson = json.getBytes(StandardCharsets.UTF_8);
+    }
+
+    AuthenticationVerificationRequest request(boolean validSignature) throws Exception {
+      return build(challenge, false, validSignature);
+    }
+
+    AuthenticationVerificationRequest requestWithChallenge(byte[] expected) throws Exception {
+      return new AuthenticationVerificationRequest(
+          authData,
+          clientDataJson,
+          sign(true),
+          expected,
+          List.of("https://example.com"),
+          rpId,
+          coseKey,
+          false);
+    }
+
+    AuthenticationVerificationRequest requestUvRequired() throws Exception {
+      return build(challenge, true, true);
+    }
+
+    private AuthenticationVerificationRequest build(
+        byte[] expectedChallenge, boolean uvRequired, boolean validSignature) throws Exception {
+      return new AuthenticationVerificationRequest(
+          authData,
+          clientDataJson,
+          sign(validSignature),
+          expectedChallenge,
+          List.of("https://example.com"),
+          rpId,
+          coseKey,
+          uvRequired);
+    }
+
+    private byte[] sign(boolean valid) throws Exception {
+      byte[] clientHash = MessageDigest.getInstance("SHA-256").digest(clientDataJson);
+      ByteArrayOutputStream signed = new ByteArrayOutputStream();
+      signed.writeBytes(authData);
+      signed.writeBytes(clientHash);
+      Signature signer = Signature.getInstance("SHA256withECDSA");
+      signer.initSign(keyPair.getPrivate());
+      signer.update(valid ? signed.toByteArray() : "garbage".getBytes());
+      return signer.sign();
+    }
+
+    // AttestedCredentialData serialized form: aaguid(16) + credIdLen(2) + credId + coseKey.
+    // This matches the credential.public_key_cose column the verifier reads via
+    // AttestedCredentialData.parse().
+    private static byte[] es256CoseKey(ECPublicKey pub) {
+      Map<Object, Object> m = new LinkedHashMap<>();
+      m.put(1L, 2L);
+      m.put(3L, -7L);
+      m.put(-1L, 1L);
+      m.put(-2L, fixed(pub.getW().getAffineX()));
+      m.put(-3L, fixed(pub.getW().getAffineY()));
+      byte[] cose = CborTestEncoder.encodeMap(m);
+      byte[] credId = new byte[] {1, 2, 3, 4};
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      out.writeBytes(new byte[16]); // aaguid
+      out.write((credId.length >> 8) & 0xff);
+      out.write(credId.length & 0xff);
+      out.writeBytes(credId);
+      out.writeBytes(cose);
+      return out.toByteArray();
+    }
+
+    private static byte[] fixed(java.math.BigInteger v) {
+      byte[] raw = v.toByteArray();
+      byte[] out = new byte[32];
+      if (raw.length > 32) {
+        System.arraycopy(raw, raw.length - 32, out, 0, 32);
+      } else {
+        System.arraycopy(raw, 0, out, 32 - raw.length, raw.length);
+      }
+      return out;
+    }
+  }
+}

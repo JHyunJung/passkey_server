@@ -54,14 +54,6 @@ dependencies {
     implementation("org.flywaydb:flyway-core")
     implementation("org.flywaydb:flyway-database-oracle")
 
-    // webauthn4j — M2 BE-005
-    implementation("com.webauthn4j:webauthn4j-core:0.27.0.RELEASE")
-
-    // FIDO MDS3 BLOB parsing + trust anchor sourcing. Used only when passkey.mds.enabled=true
-    // and a tenant has mds_strict=true on TenantAttestationPolicy. Pulls in the
-    // MetadataBLOBBasedTrustAnchorRepository implementation.
-    implementation("com.webauthn4j:webauthn4j-metadata:0.27.0.RELEASE")
-
     // JWT — M3 BE-011. jjwt covers the legacy HS256 verify path; nimbus-jose-jwt drives RS256
     // issuance and the JWKS endpoint. Both libraries co-exist during the HS→RS cutover window;
     // jjwt can be removed once outstanding HS256 tokens have expired.
@@ -90,6 +82,11 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
     testImplementation("org.assertj:assertj-core")
+
+    // BouncyCastle — test-only. Builds §8.2.1-compliant self-signed X.509 attestation
+    // certificates as fixtures (packed full / apple / android-key / safetynet / u2f / tpm).
+    // Not on the production classpath.
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 }
 
 tasks.withType<JavaCompile>().configureEach {

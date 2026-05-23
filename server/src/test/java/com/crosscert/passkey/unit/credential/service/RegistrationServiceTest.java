@@ -3,6 +3,7 @@ package com.crosscert.passkey.unit.credential.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.when;
 
 import com.crosscert.passkey.audit.service.AuditService;
@@ -14,18 +15,21 @@ import com.crosscert.passkey.credential.challenge.CeremonyType;
 import com.crosscert.passkey.credential.challenge.ChallengeRecord;
 import com.crosscert.passkey.credential.challenge.ChallengeStore;
 import com.crosscert.passkey.credential.challenge.WebauthnCeremonyProperties;
+import com.crosscert.passkey.credential.domain.AttestationMode;
 import com.crosscert.passkey.credential.domain.Credential;
+import com.crosscert.passkey.credential.domain.TenantAttestationPolicy;
 import com.crosscert.passkey.credential.domain.TenantWebauthnConfig;
+import com.crosscert.passkey.credential.metadata.MdsConfig.MdsTrustAnchorSourceHolder;
 import com.crosscert.passkey.credential.metrics.CeremonyMetrics;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.credential.repository.TenantAttestationPolicyRepository;
 import com.crosscert.passkey.credential.service.RegistrationService;
 import com.crosscert.passkey.credential.service.TenantWebauthnConfigService;
+import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
 import com.crosscert.passkey.tenant.context.TenantContext;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
-import com.webauthn4j.WebAuthnManager;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.List;
@@ -55,8 +59,9 @@ class RegistrationServiceTest {
   @Mock private TenantUserRepository userRepo;
   @Mock private CredentialRepository credentialRepo;
   @Mock private ChallengeStore challengeStore;
-  @Mock private WebAuthnManager nonStrictManager;
-  @Mock private ObjectProvider<WebAuthnManager> strictManagerProvider;
+  @Mock private ObjectProvider<MdsTrustAnchorSourceHolder> mdsHolderProvider;
+  @Mock private MdsTrustAnchorSourceHolder holder;
+  @Mock private MdsTrustAnchorSource trustAnchorSource;
   @Mock private AuditService auditService;
 
   private RegistrationService service;
@@ -83,8 +88,7 @@ class RegistrationServiceTest {
             userRepo,
             credentialRepo,
             challengeStore,
-            nonStrictManager,
-            strictManagerProvider,
+            mdsHolderProvider,
             auditService,
             ceremonyProps,
             metrics);
@@ -201,6 +205,60 @@ class RegistrationServiceTest {
     } finally {
       TenantContextHolder.clear();
     }
+  }
+
+  // ── MDS_UNAVAILABLE coverage ────────────────────────────────────────────────────────────────
+
+  /**
+   * When a tenant requires {@code mdsStrict=true} but the MDS holder bean is not available (e.g.
+   * {@code passkey.mds.enabled=false} → {@code MdsTrustAnchorSourceHolder} bean absent), {@code
+   * finishRegistration} must throw {@code MDS_UNAVAILABLE} before touching attestation.
+   */
+  @Test
+  void strict_tenant_with_no_mds_holder_throws_mds_unavailable() {
+    RegistrationVerifyRequest req = sampleReq();
+    ChallengeRecord challenge =
+        new ChallengeRecord("chal", tenantId, UUID.randomUUID(), CeremonyType.REGISTRATION, null);
+    given(challengeStore.consume(req.ceremonyId())).willReturn(Optional.of(challenge));
+
+    TenantAttestationPolicy strictPolicy = TenantAttestationPolicy.permissive(tenantId);
+    strictPolicy.update(
+        AttestationMode.ANY, java.util.List.of(), java.util.List.of(), true, false, true);
+    given(policyRepo.findByTenantId(tenantId)).willReturn(Optional.of(strictPolicy));
+
+    // Simulate: MdsTrustAnchorSourceHolder bean is absent (passkey.mds.enabled=false)
+    given(mdsHolderProvider.getIfAvailable()).willReturn(null);
+
+    assertThatThrownBy(() -> service.finishRegistration(req))
+        .isInstanceOf(BusinessException.class)
+        .extracting(e -> ((BusinessException) e).getErrorCode())
+        .isEqualTo(ErrorCode.MDS_UNAVAILABLE);
+  }
+
+  /**
+   * When the MDS holder bean exists but {@code current()} returns null (BLOB not yet loaded after
+   * first boot), {@code finishRegistration} must throw {@code MDS_UNAVAILABLE}.
+   */
+  @Test
+  void strict_tenant_with_holder_returning_null_source_throws_mds_unavailable() {
+    RegistrationVerifyRequest req = sampleReq();
+    ChallengeRecord challenge =
+        new ChallengeRecord("chal", tenantId, UUID.randomUUID(), CeremonyType.REGISTRATION, null);
+    given(challengeStore.consume(req.ceremonyId())).willReturn(Optional.of(challenge));
+
+    TenantAttestationPolicy strictPolicy = TenantAttestationPolicy.permissive(tenantId);
+    strictPolicy.update(
+        AttestationMode.ANY, java.util.List.of(), java.util.List.of(), true, false, true);
+    given(policyRepo.findByTenantId(tenantId)).willReturn(Optional.of(strictPolicy));
+
+    // Simulate: holder present but BLOB not yet loaded (current() == null)
+    given(mdsHolderProvider.getIfAvailable()).willReturn(holder);
+    given(holder.current()).willReturn(null);
+
+    assertThatThrownBy(() -> service.finishRegistration(req))
+        .isInstanceOf(BusinessException.class)
+        .extracting(e -> ((BusinessException) e).getErrorCode())
+        .isEqualTo(ErrorCode.MDS_UNAVAILABLE);
   }
 
   @AfterEach

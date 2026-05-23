@@ -23,7 +23,6 @@ import com.crosscert.passkey.credential.service.TenantWebauthnConfigService;
 import com.crosscert.passkey.ratelimit.RateLimitProperties;
 import com.crosscert.passkey.ratelimit.RateLimiter;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
-import com.webauthn4j.WebAuthnManager;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.Optional;
@@ -50,7 +49,6 @@ class AuthenticationServiceTest {
   @Mock private TenantUserRepository userRepo;
   @Mock private CredentialRepository credentialRepo;
   @Mock private ChallengeStore challengeStore;
-  @Mock private WebAuthnManager webAuthnManager;
   @Mock private TokenService tokenService;
   @Mock private AuditService auditService;
   @Mock private RateLimiter rateLimiter;
@@ -80,7 +78,6 @@ class AuthenticationServiceTest {
             userRepo,
             credentialRepo,
             challengeStore,
-            webAuthnManager,
             tokenService,
             auditService,
             ceremonyProps,
