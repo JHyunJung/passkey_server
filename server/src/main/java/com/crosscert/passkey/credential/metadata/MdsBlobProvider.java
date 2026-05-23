@@ -2,6 +2,8 @@ package com.crosscert.passkey.credential.metadata;
 
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
+import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
+import com.crosscert.passkey.fido2.mds.MetadataBlob;
 import com.webauthn4j.converter.util.ObjectConverter;
 import com.webauthn4j.metadata.FidoMDS3MetadataBLOBProvider;
 import com.webauthn4j.metadata.MetadataBLOBProvider;
@@ -21,6 +23,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
 
 /**
  * Thin wrapper around webauthn4j's {@link FidoMDS3MetadataBLOBProvider}. The webauthn4j class
@@ -36,15 +39,21 @@ public class MdsBlobProvider implements MetadataBLOBProvider {
   private final MdsProperties props;
   private final FidoMDS3MetadataBLOBProvider delegate;
 
+  // --- Phase 3: in-house MDS parsing alongside the webauthn4j delegate. ---
+  private final RestClient restClient;
+  private final X509Certificate rootCa;
+  private final AtomicReference<MdsTrustAnchorSource> trustAnchorSource = new AtomicReference<>();
+
   @Getter private final AtomicReference<Instant> lastFetched = new AtomicReference<>();
   @Getter private final AtomicReference<MetadataBLOB> lastBlob = new AtomicReference<>();
 
   @Autowired
   public MdsBlobProvider(MdsProperties props, ResourceLoader resourceLoader) {
     this.props = props;
-    X509Certificate rootCa = loadRootCa(resourceLoader);
+    this.rootCa = loadRootCa(resourceLoader);
     this.delegate =
-        new FidoMDS3MetadataBLOBProvider(new ObjectConverter(), props.getBlobUrl(), rootCa);
+        new FidoMDS3MetadataBLOBProvider(new ObjectConverter(), props.getBlobUrl(), this.rootCa);
+    this.restClient = RestClient.create();
     log.info(
         "mds.provider.constructed url={} rootCaSubject={}",
         props.getBlobUrl(),
@@ -85,6 +94,30 @@ public class MdsBlobProvider implements MetadataBLOBProvider {
         }
       }
     }
+    refreshInHouse();
+  }
+
+  /**
+   * Fetch the BLOB JWS and parse it with the in-house {@code fido2.mds} parser, swapping in a fresh
+   * {@link MdsTrustAnchorSource}. Called from {@link #refresh()} alongside the webauthn4j delegate
+   * refresh. Failures are logged but do not propagate — the stale in-house source is kept (same
+   * fail-soft policy as the webauthn4j delegate).
+   */
+  private void refreshInHouse() {
+    try {
+      String jws = restClient.get().uri(props.getBlobUrl()).retrieve().body(String.class);
+      MetadataBlob blob = MetadataBlob.parse(jws, rootCa);
+      trustAnchorSource.set(new MdsTrustAnchorSource(blob.entries()));
+      log.info("mds.inhouse.refresh.success entries={}", blob.entries().size());
+    } catch (Exception e) {
+      // fail-soft: keep the stale in-house source, same policy as the webauthn4j delegate.
+      log.error("mds.inhouse.refresh.failed reason={}", e.getMessage(), e);
+    }
+  }
+
+  /** The current in-house trust anchor source, or null before the first successful refresh. */
+  public MdsTrustAnchorSource currentTrustAnchorSource() {
+    return trustAnchorSource.get();
   }
 
   @Override
