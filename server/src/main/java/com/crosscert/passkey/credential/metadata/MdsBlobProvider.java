@@ -52,7 +52,7 @@ public class MdsBlobProvider {
     try {
       refresh();
     } catch (Exception e) {
-      // fail-open: strict tenants get MDS_UNAVAILABLE until next scheduled refresh succeeds
+      // fail-closed: strict tenants get MDS_UNAVAILABLE until next scheduled refresh succeeds
       log.error("mds.warmup.failed reason={}", e.getMessage(), e);
     }
   }

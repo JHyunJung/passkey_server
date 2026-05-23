@@ -353,7 +353,8 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
       case -257 -> "SHA256withRSA";
       default ->
           throw new Fido2VerificationException(
-              FailureReason.ATTESTATION_INVALID, "packed attestation unsupported alg: " + coseAlg);
+              FailureReason.UNSUPPORTED_ALGORITHM,
+              "packed attestation unsupported alg: " + coseAlg);
     };
   }
 }

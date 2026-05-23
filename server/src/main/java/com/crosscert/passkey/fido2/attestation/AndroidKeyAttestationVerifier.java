@@ -172,7 +172,7 @@ public final class AndroidKeyAttestationVerifier implements AttestationVerifier 
       case -257 -> "SHA256withRSA";
       default ->
           throw new Fido2VerificationException(
-              FailureReason.ATTESTATION_INVALID,
+              FailureReason.UNSUPPORTED_ALGORITHM,
               "android-key attestation unsupported alg: " + coseAlg);
     };
   }

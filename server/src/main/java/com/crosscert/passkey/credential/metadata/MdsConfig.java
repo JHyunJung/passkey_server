@@ -10,9 +10,7 @@ import org.springframework.context.annotation.Configuration;
  * The bean is a thin accessor over {@link MdsBlobProvider}, which holds the live source and swaps
  * it on each refresh — so callers always see the latest BLOB without rebuilding the bean.
  *
- * <p>Phase 3: this bean coexists with the webauthn4j {@code TrustAnchorRepository} (wired by {@code
- * MdsTrustAnchorRepositoryConfig}); Phase 4 removes the webauthn4j wiring once the strict
- * registration path no longer uses webauthn4j.
+ * <p>Sole source of strict-mode trust anchors after Milestone B Phase 4 removed webauthn4j.
  */
 @Configuration
 @ConditionalOnBean(MdsBlobProvider.class)

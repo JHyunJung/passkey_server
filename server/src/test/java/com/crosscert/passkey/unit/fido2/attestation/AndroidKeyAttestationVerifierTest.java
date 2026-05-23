@@ -59,6 +59,28 @@ class AndroidKeyAttestationVerifierTest {
   }
 
   @Test
+  void rejects_android_key_with_unsupported_alg() throws Exception {
+    // Build a fixture with alg=-999 (unknown) — jcaAlgorithmForCoseAlg default branch →
+    // UNSUPPORTED_ALGORITHM.
+    Fixture f = Fixture.build(true, true);
+    AttestationObject base = AttestationObject.parse(f.attestationObject);
+    Map<Object, Object> attStmt = new LinkedHashMap<>();
+    attStmt.put("alg", -999L);
+    attStmt.put("sig", base.attestationStatement().get("sig"));
+    attStmt.put("x5c", base.attestationStatement().get("x5c"));
+    Map<Object, Object> obj = new LinkedHashMap<>();
+    obj.put("fmt", "android-key");
+    obj.put("attStmt", attStmt);
+    obj.put("authData", base.authenticatorData().rawBytes());
+    AttestationObject modified = AttestationObject.parse(CborTestEncoder.encodeMap(obj));
+    assertThatThrownBy(
+            () -> new AndroidKeyAttestationVerifier().verify(modified, f.clientDataHash, null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.UNSUPPORTED_ALGORITHM);
+  }
+
+  @Test
   void rejects_android_key_with_invalid_signature() throws Exception {
     Fixture f = Fixture.build(true, false /* signature over garbage */);
     AttestationObject obj = AttestationObject.parse(f.attestationObject);

@@ -246,6 +246,25 @@ class AttestationVerifierTest {
   }
 
   @Test
+  void packed_x5c_with_unsupported_alg_is_rejected() throws Exception {
+    // x5c path with alg=-999 (unknown) — jcaAlgorithmForCoseAlg default branch →
+    // UNSUPPORTED_ALGORITHM.
+    byte[] clientDataHash = new byte[32];
+    byte[] aaguid = new byte[16];
+    KeyPair attPair = ecKeyPair();
+    X509Certificate attCert = attestationCert(attPair, "SHA256withECDSA", REQUIRED_OU_DN, aaguid);
+    byte[] authDataBytes = authData(aaguid, ecCoseKey(ecKeyPair()));
+    byte[] sig = sign(attPair.getPrivate(), "SHA256withECDSA", authDataBytes, clientDataHash);
+    AttestationObject obj =
+        AttestationObject.parse(packedFullAttestation(authDataBytes, -999L, sig, attCert));
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("packed").verify(obj, clientDataHash, null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.UNSUPPORTED_ALGORITHM);
+  }
+
+  @Test
   void packed_missing_sig_is_rejected() throws Exception {
     Map<Object, Object> attStmt = new LinkedHashMap<>();
     attStmt.put("alg", -7L);
