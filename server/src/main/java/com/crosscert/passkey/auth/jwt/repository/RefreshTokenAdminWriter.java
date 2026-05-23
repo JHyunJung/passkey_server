@@ -32,15 +32,16 @@ public class RefreshTokenAdminWriter {
 
   /**
    * Constructor parameter is named {@code adminJdbcTemplate} so Spring resolves the dependency by
-   * bean name — the established pattern in {@code ApiKeyAdminWriter} / {@code CredentialAdminWriter}.
+   * bean name — the established pattern in {@code ApiKeyAdminWriter} / {@code
+   * CredentialAdminWriter}.
    */
   public RefreshTokenAdminWriter(NamedParameterJdbcTemplate adminJdbcTemplate) {
     this.admin = adminJdbcTemplate;
   }
 
   /**
-   * Revoke every live ({@code revoked_at IS NULL}) refresh token whose {@code tenant_user_id} is
-   * in {@code tenantUserIds}. Idempotent — already-revoked rows are skipped via the {@code WHERE
+   * Revoke every live ({@code revoked_at IS NULL}) refresh token whose {@code tenant_user_id} is in
+   * {@code tenantUserIds}. Idempotent — already-revoked rows are skipped via the {@code WHERE
    * revoked_at IS NULL} guard, so calling this twice in a row will affect 0 the second time.
    *
    * @return number of rows actually transitioned to revoked.

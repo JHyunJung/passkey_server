@@ -80,6 +80,7 @@ dependencies {
     // IntegrationTestBase); Testcontainers was removed because the docker-java client could not
     // negotiate the Docker Desktop socket on macOS and we never relied on Testcontainers anyway.
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.springframework.security:spring-security-test")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
     testImplementation("org.assertj:assertj-core")
 

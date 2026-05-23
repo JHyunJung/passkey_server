@@ -90,8 +90,7 @@ class MdsRevocationScanServiceTest {
     // tokens.revoked counter bumped by the lingering revoke count (no .total suffix — Prometheus
     // exporter appends _total on its own).
     assertThat(meterRegistry.counter("mds.scan.tokens.revoked").count()).isEqualTo(2.0);
-    assertThat(meterRegistry.counter("mds.scan.runs", "outcome", "success").count())
-        .isEqualTo(1.0);
+    assertThat(meterRegistry.counter("mds.scan.runs", "outcome", "success").count()).isEqualTo(1.0);
     // critical.aaguids gauge reflects this BLOB's count — 0 here (no critical entries).
     Gauge criticalGauge = meterRegistry.find("mds.scan.critical.aaguids").gauge();
     assertThat(criticalGauge).isNotNull();
@@ -177,13 +176,11 @@ class MdsRevocationScanServiceTest {
             .sum();
     assertThat(suspendedTotal).isEqualTo(3.0);
     assertThat(meterRegistry.counter("mds.scan.tokens.revoked").count()).isEqualTo(5.0);
-    assertThat(meterRegistry.counter("mds.scan.runs", "outcome", "success").count())
-        .isEqualTo(1.0);
+    assertThat(meterRegistry.counter("mds.scan.runs", "outcome", "success").count()).isEqualTo(1.0);
     // per-AAGUID counter: aaguidA = 2 rows, aaguidB = 1 row
     assertThat(
             meterRegistry
-                .counter(
-                    "mds.scan.suspended", "aaguid", aaguidA.toString(), "reason", "REVOKED")
+                .counter("mds.scan.suspended", "aaguid", aaguidA.toString(), "reason", "REVOKED")
                 .count())
         .isEqualTo(2.0);
     assertThat(
@@ -210,9 +207,7 @@ class MdsRevocationScanServiceTest {
     // Mixed status list: non-critical first, then a critical. Service must skip UPDATE_AVAILABLE
     // and select REVOKED into the criticalAaguids map.
     MetadataBlob blob =
-        blobOf(
-            55,
-            entry(aaguid, List.of(StatusReport.UPDATE_AVAILABLE, StatusReport.REVOKED)));
+        blobOf(55, entry(aaguid, List.of(StatusReport.UPDATE_AVAILABLE, StatusReport.REVOKED)));
 
     when(credentialAdminWriter.suspendByAaguids(any(), eq(55L))).thenReturn(List.of());
     when(credentialAdminWriter.tenantUserIdsWithSuspendedCredentialAndLiveToken())
@@ -225,9 +220,7 @@ class MdsRevocationScanServiceTest {
         .suspendByAaguids(
             argThat(
                 (Map<UUID, StatusReport> m) ->
-                    m != null
-                        && m.size() == 1
-                        && m.get(aaguid) == StatusReport.REVOKED),
+                    m != null && m.size() == 1 && m.get(aaguid) == StatusReport.REVOKED),
             eq(55L));
   }
 

@@ -64,8 +64,8 @@ public class MdsRevocationScanService {
    * Backing value for the {@code mds.scan.critical.aaguids} gauge. Registered once in the
    * constructor so the meter holds a strong reference — Micrometer's {@code MeterRegistry#gauge}
    * convenience overload wraps the value in a weak reference and silently turns into {@code NaN}
-   * once the temporary number is GC'd. {@link AtomicInteger} both gives us the strong ref and
-   * makes per-scan {@code .set(...)} thread-safe.
+   * once the temporary number is GC'd. {@link AtomicInteger} both gives us the strong ref and makes
+   * per-scan {@code .set(...)} thread-safe.
    */
   private final AtomicInteger criticalAaguidGauge = new AtomicInteger();
 
@@ -92,8 +92,8 @@ public class MdsRevocationScanService {
   }
 
   /**
-   * Run one revocation cycle for {@code blob}. Increments {@code mds.scan.runs{outcome}} and
-   * stops the {@code mds.scan.duration} timer regardless of which branch ran.
+   * Run one revocation cycle for {@code blob}. Increments {@code mds.scan.runs{outcome}} and stops
+   * the {@code mds.scan.duration} timer regardless of which branch ran.
    */
   public ScanResult scan(MetadataBlob blob) {
     Timer.Sample sample = Timer.start(meterRegistry);
@@ -126,8 +126,7 @@ public class MdsRevocationScanService {
     // Single gauge update point — reflects the latest BLOB's critical count for both branches
     // (set to 0 on an empty-critical BLOB so dashboards can alert on "gauge != 0" reliably).
     criticalAaguidGauge.set(criticalAaguids.size());
-    log.info(
-        "mds.scan.start critical={} blobSerial={}", criticalAaguids.size(), blobSerial);
+    log.info("mds.scan.start critical={} blobSerial={}", criticalAaguids.size(), blobSerial);
 
     // 2) No criticals → lingering-token cleanup only (covers prior F5 between credential SUSPEND
     //    and refresh-token revoke). Task 12 retry-integration test exercises this branch.
@@ -138,8 +137,7 @@ public class MdsRevocationScanService {
         int revoked =
             refreshTokenAdminWriter.revokeAllByTenantUserIds(
                 lingering, RevokedReason.CREDENTIAL_SUSPENDED);
-        log.info(
-            "mds.scan.tokens.lingering.revoked count={} users={}", revoked, lingering.size());
+        log.info("mds.scan.tokens.lingering.revoked count={} users={}", revoked, lingering.size());
         meterRegistry.counter("mds.scan.tokens.revoked").increment(revoked);
       }
       return ScanResult.empty(blobSerial);
@@ -170,8 +168,7 @@ public class MdsRevocationScanService {
     int tokensRevoked =
         refreshTokenAdminWriter.revokeAllByTenantUserIds(
             tenantUserIds, RevokedReason.CREDENTIAL_SUSPENDED);
-    log.info(
-        "mds.scan.tokens.revoked count={} users={}", tokensRevoked, tenantUserIds.size());
+    log.info("mds.scan.tokens.revoked count={} users={}", tokensRevoked, tenantUserIds.size());
 
     // 6) Per-tenant audit row under that tenant's TenantContext.
     Map<UUID, List<SuspendedRow>> byTenant =
@@ -203,8 +200,7 @@ public class MdsRevocationScanService {
         byTenant.size(),
         blobSerial);
 
-    return new ScanResult(
-        blobSerial, newlySuspended.size(), tokensRevoked, byTenant.keySet());
+    return new ScanResult(blobSerial, newlySuspended.size(), tokensRevoked, byTenant.keySet());
   }
 
   /**

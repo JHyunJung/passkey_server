@@ -23,9 +23,9 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
  *
  * <p><strong>Why not {@code @JdbcTest}.</strong> Same reasoning as {@code
  * CredentialAdminWriterSliceTest}: the writer issues Oracle-native SQL ({@code HEXTORAW}, {@code
- * SYSTIMESTAMP}, {@code SYS_EXTRACT_UTC}, multi-bind {@code IN} on {@code RAW(16)}) and runs on
- * the {@code APP_ADMIN} (VPD-exempt) data source so a single UPDATE can cross tenants. So this
- * test extends {@link AdminEnabledIntegrationTestBase} and seeds fixtures via the {@code
+ * SYSTIMESTAMP}, {@code SYS_EXTRACT_UTC}, multi-bind {@code IN} on {@code RAW(16)}) and runs on the
+ * {@code APP_ADMIN} (VPD-exempt) data source so a single UPDATE can cross tenants. So this test
+ * extends {@link AdminEnabledIntegrationTestBase} and seeds fixtures via the {@code
  * adminJdbcTemplate}.
  */
 class RefreshTokenAdminWriterSliceTest extends AdminEnabledIntegrationTestBase {
@@ -99,8 +99,8 @@ class RefreshTokenAdminWriterSliceTest extends AdminEnabledIntegrationTestBase {
   }
 
   /**
-   * Inserts a refresh_token row through APP_ADMIN. If {@code revokedReason} is non-null, the row
-   * is pre-revoked (used to seed the "already revoked, should be skipped" case).
+   * Inserts a refresh_token row through APP_ADMIN. If {@code revokedReason} is non-null, the row is
+   * pre-revoked (used to seed the "already revoked, should be skipped" case).
    */
   private void insertToken(UUID tenantId, UUID userId, String revokedReason) {
     OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);

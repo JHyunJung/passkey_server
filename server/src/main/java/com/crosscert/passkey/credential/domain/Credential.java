@@ -162,8 +162,8 @@ public class Credential extends TenantScopedEntity {
 
   /**
    * Suspend (post-registration auto-block path — currently MDS critical AAGUID detection).
-   * Idempotent: re-suspending preserves the original suspendedAt/Reason.
-   * Throws CREDENTIAL_INVALID_STATE on REVOKED credential (revoked is terminal).
+   * Idempotent: re-suspending preserves the original suspendedAt/Reason. Throws
+   * CREDENTIAL_INVALID_STATE on REVOKED credential (revoked is terminal).
    */
   public void suspend(String reasonDetail) {
     if (this.status == CredentialStatus.SUSPENDED) {

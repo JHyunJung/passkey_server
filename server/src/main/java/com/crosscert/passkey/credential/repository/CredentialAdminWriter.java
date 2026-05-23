@@ -26,9 +26,9 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Gated on {@code passkey.admin.enabled=true} — same switch that activates {@code
  * AdminJdbcConfig} (and therefore the {@code adminJdbcTemplate} / {@code adminTransactionManager}
- * beans this writer depends on). Mirrors {@code ApiKeyAdminWriter}'s gating exactly. {@code
- * @ConditionalOnBean} was considered but is fragile when the depended-on bean is declared in the
- * same context refresh — the property-based gate is the established project convention.
+ * beans this writer depends on). Mirrors {@code ApiKeyAdminWriter}'s gating exactly.
+ * {@code @ConditionalOnBean} was considered but is fragile when the depended-on bean is declared in
+ * the same context refresh — the property-based gate is the established project convention.
  */
 @Slf4j
 @Component
@@ -62,8 +62,7 @@ public class CredentialAdminWriter {
    * @return rows that transitioned ACTIVE → SUSPENDED (empty if none).
    */
   @Transactional("adminTransactionManager")
-  public List<SuspendedRow> suspendByAaguids(
-      Map<UUID, StatusReport> aaguids, long mdsBlobSerial) {
+  public List<SuspendedRow> suspendByAaguids(Map<UUID, StatusReport> aaguids, long mdsBlobSerial) {
     if (aaguids == null || aaguids.isEmpty()) {
       return List.of();
     }
@@ -99,9 +98,7 @@ public class CredentialAdminWriter {
 
     if (targets.isEmpty()) {
       log.info(
-          "mds.scan.suspend.nothingToDo aaguids={} blobSerial={}",
-          aaguids.size(),
-          mdsBlobSerial);
+          "mds.scan.suspend.nothingToDo aaguids={} blobSerial={}", aaguids.size(), mdsBlobSerial);
       return targets;
     }
 
@@ -111,9 +108,7 @@ public class CredentialAdminWriter {
                 r ->
                     new MapSqlParameterSource()
                         .addValue("id", uuidToHex(r.id()))
-                        .addValue(
-                            "reason",
-                            "MDS_REVOKED:" + aaguids.get(r.aaguid()).name()))
+                        .addValue("reason", "MDS_REVOKED:" + aaguids.get(r.aaguid()).name()))
             .toArray(SqlParameterSource[]::new);
 
     int[] affected =

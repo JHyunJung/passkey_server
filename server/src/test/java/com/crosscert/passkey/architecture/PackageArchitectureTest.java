@@ -56,6 +56,7 @@ class PackageArchitectureTest {
             "..tenant.service..",
             "..credential.service..", // RegistrationService binds tenant id on user creation
             "..credential.challenge..", // ChallengeStore scopes redis keys by current tenant
+            "..credential.metadata..", // MdsRevocationScanService binds tenant for per-tenant audit
             "..audit.service..", // AuditService binds tenant id to per-tenant hash chain
             "..ratelimit..", // RateLimitFilter scopes buckets per tenant
             "..admin.security..", // AdminAuthz sets tenant context for admin-scoped endpoints
