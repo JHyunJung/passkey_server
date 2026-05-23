@@ -290,9 +290,12 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
 
   /**
    * Self attestation (no x5c): verify the signature with the credential public key. The attStmt alg
-   * must equal the credential key's algorithm per WebAuthn L3 §8.2. When {@code trustAnchors} is
-   * non-null (strict mode) the AAGUID is additionally checked against the MDS — a self-attesting
-   * authenticator that is not in the metadata registry is rejected.
+   * must equal the credential key's algorithm per WebAuthn L3 §8.2.
+   *
+   * <p>Strict mode: rejected. Packed self-attestation is signed by the credential key itself (no
+   * x5c cert), so the AAGUID claim is unverifiable — an attacker can claim any trusted AAGUID and
+   * sign with their own credential key. When {@code trustAnchors} is non-null, the call throws
+   * {@link FailureReason#ATTESTATION_INVALID} regardless of the AAGUID value or MDS status.
    */
   private static AttestationResult verifySelf(
       AttestedCredentialData acd,
@@ -315,25 +318,16 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
         throw new Fido2VerificationException(
             FailureReason.ATTESTATION_INVALID, "packed self-attestation signature invalid");
       }
-      // Strict mode: even self-attesting authenticators must appear in the MDS registry and must
-      // not be revoked.
+      // Strict mode: packed self-attestation has no x5c cert chain to validate against MDS trust
+      // anchors — the sig is by the credential key itself, so the AAGUID claim is unverifiable.
+      // An attacker can claim any trusted AAGUID and sign with their own credential key. Reject
+      // in strict mode (AAGUID lookup/revoked-check is meaningless without a cert chain).
       if (trustAnchors != null) {
-        UUID aaguid = aaguidOf(acd);
-        Optional<MetadataEntry> entry = trustAnchors.findEntry(aaguid);
-        if (entry.isEmpty()) {
-          throw new Fido2VerificationException(
-              FailureReason.MDS_TRUST_FAILED,
-              "no MDS entry for AAGUID "
-                  + aaguid
-                  + " — self-attesting authenticator not in metadata");
-        }
-        if (entry.get().isRevoked()) {
-          throw new Fido2VerificationException(
-              FailureReason.AUTHENTICATOR_REVOKED,
-              "packed self-attestation authenticator AAGUID " + aaguid + " is revoked per MDS");
-        }
+        throw new Fido2VerificationException(
+            FailureReason.ATTESTATION_INVALID,
+            "packed self-attestation cannot satisfy strict MDS requirement — no attestation certificate to chain to a trust anchor");
       }
-      return new AttestationResult("packed", trustAnchors != null);
+      return new AttestationResult("packed", false);
     } catch (Fido2VerificationException e) {
       throw e;
     } catch (CborDecodeException | CoseException e) {

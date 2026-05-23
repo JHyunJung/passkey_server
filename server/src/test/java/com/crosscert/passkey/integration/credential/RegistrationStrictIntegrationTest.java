@@ -221,7 +221,9 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
   }
 
   // ========================================================================================
-  // Test 3: packed self-attestation — reject when AAGUID not in MDS (strict self path).
+  // Test 3: packed self-attestation — always rejected in strict mode (P1.2 Codex fix).
+  // Self-attestation has no cert chain so the AAGUID claim is unverifiable; rejection is
+  // unconditional regardless of MDS AAGUID presence/revocation status.
   // ========================================================================================
 
   @Test
@@ -275,7 +277,7 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
     assertThatThrownBy(() -> finishUnderTenant(req))
         .isInstanceOf(BusinessException.class)
         .extracting(e -> ((BusinessException) e).getErrorCode())
-        .isEqualTo(ErrorCode.MDS_TRUST_FAILED);
+        .isEqualTo(ErrorCode.ATTESTATION_INVALID);
   }
 
   // ========================================================================================
@@ -308,17 +310,21 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
   }
 
   // ========================================================================================
-  // Test 5: none attestation — passes in strict tenant (fmt=none has no trust anchor check).
+  // Test 5: none attestation — REJECTED in strict tenant (P1.1 Codex fix).
+  // Previously this test asserted that fmt=none passed in strict mode — that was the bypass.
+  // fmt=none carries no attestation certificate and cannot satisfy the MDS chain requirement.
   // ========================================================================================
 
   @Test
-  void none_attestation_passes_in_strict_tenant() throws Exception {
+  void none_attestation_rejected_in_strict_tenant() throws Exception {
+    // Security regression guard (Codex P1.1): strict tenants must reject fmt=none because
+    // there is no attestation certificate to chain to an MDS trust anchor.
     RegistrationOptionsResponse options =
         beginUnderTenant("user-none-strict", "None Attestation User");
     byte[] clientDataJson = buildClientDataJson(options.challenge(), RP_ORIGIN);
 
-    // Use a fixture-registered AAGUID so we exercise the strict-tenant + none-fmt bypass —
-    // NoneAttestationVerifier does not consult MDS.
+    // Use a fixture-registered AAGUID — the AAGUID presence in MDS must not matter; rejection
+    // must happen before any MDS lookup because there is no cert chain at all.
     byte[] rpIdHash = sha256(RP_ID.getBytes(StandardCharsets.UTF_8));
     byte[] packedAaguidBytes =
         MdsBlobFixtureBuilder.uuidToBytes(MdsBlobFixtureBuilder.PACKED_AAGUID);
@@ -347,9 +353,69 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
             null,
             null);
 
-    RegistrationResult result = finishUnderTenant(req);
-    assertThat(result).isNotNull();
-    assertThat(result.credentialId()).isNotBlank();
+    assertThatThrownBy(() -> finishUnderTenant(req))
+        .isInstanceOf(BusinessException.class)
+        .extracting(e -> ((BusinessException) e).getErrorCode())
+        .isEqualTo(ErrorCode.ATTESTATION_INVALID);
+  }
+
+  // ========================================================================================
+  // Test 5b: packed self-attestation — REJECTED in strict mode even when AAGUID is trusted.
+  // Security regression guard (Codex P1.2): attacker can sign self-attestation with their own
+  // credential key while claiming a trusted AAGUID. Strict mode must reject regardless of
+  // AAGUID status because there is no cert chain to validate.
+  // ========================================================================================
+
+  @Test
+  void strict_tenant_rejects_packed_self_attestation_even_with_trusted_aaguid() throws Exception {
+    // Use PACKED_AAGUID which IS registered and non-revoked in the fixture MDS —
+    // this ensures the rejection is from the self-attestation policy, not from MDS lookup.
+    RegistrationOptionsResponse options =
+        beginUnderTenant("user-packed-self-trusted", "Self Attestation Trusted AAGUID");
+    byte[] clientDataJson = buildClientDataJson(options.challenge(), RP_ORIGIN);
+    byte[] clientDataHash = sha256(clientDataJson);
+
+    byte[] aaguidBytes = MdsBlobFixtureBuilder.uuidToBytes(MdsBlobFixtureBuilder.PACKED_AAGUID);
+    byte[] rpIdHash = sha256(RP_ID.getBytes(StandardCharsets.UTF_8));
+
+    java.security.KeyPairGenerator ecGen = java.security.KeyPairGenerator.getInstance("EC");
+    ecGen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+    java.security.KeyPair credPair = ecGen.generateKeyPair();
+    byte[] coseKey =
+        MdsBlobFixtureBuilder.ecCoseKey(
+            (java.security.interfaces.ECPublicKey) credPair.getPublic());
+    byte[] authData = buildAuthData(rpIdHash, aaguidBytes, coseKey);
+
+    java.io.ByteArrayOutputStream signed = new java.io.ByteArrayOutputStream();
+    signed.writeBytes(authData);
+    signed.writeBytes(clientDataHash);
+    java.security.Signature sig = java.security.Signature.getInstance("SHA256withECDSA");
+    sig.initSign(credPair.getPrivate());
+    sig.update(signed.toByteArray());
+    byte[] signature = sig.sign();
+
+    java.util.Map<Object, Object> attStmt = new java.util.LinkedHashMap<>();
+    attStmt.put("alg", -7L);
+    attStmt.put("sig", signature);
+    java.util.Map<Object, Object> ao = new java.util.LinkedHashMap<>();
+    ao.put("fmt", "packed");
+    ao.put("attStmt", attStmt);
+    ao.put("authData", authData);
+    byte[] attObj = MdsBlobFixtureBuilder.cborEncodeMap(ao);
+
+    RegistrationVerifyRequest req =
+        new RegistrationVerifyRequest(
+            options.ceremonyId(),
+            "cred-packed-self-trusted",
+            Base64UrlCodec.encode(clientDataJson),
+            Base64UrlCodec.encode(attObj),
+            null,
+            null);
+
+    assertThatThrownBy(() -> finishUnderTenant(req))
+        .isInstanceOf(BusinessException.class)
+        .extracting(e -> ((BusinessException) e).getErrorCode())
+        .isEqualTo(ErrorCode.ATTESTATION_INVALID);
   }
 
   // ========================================================================================
@@ -444,11 +510,12 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
             Base64UrlCodec.encode(attObjA),
             null,
             null);
-    // Tenant A (strict) must reject unknown AAGUID.
+    // Tenant A (strict) must reject packed self-attestation (ATTESTATION_INVALID — no cert chain,
+    // AAGUID claim is unverifiable; Codex P1.2 fix supersedes the previous MDS_TRUST_FAILED path).
     assertThatThrownBy(() -> finishUnderTenant(reqA))
         .isInstanceOf(BusinessException.class)
         .extracting(e -> ((BusinessException) e).getErrorCode())
-        .isEqualTo(ErrorCode.MDS_TRUST_FAILED);
+        .isEqualTo(ErrorCode.ATTESTATION_INVALID);
 
     // Tenant B (non-strict) — same unknown AAGUID (zero used for none attestation) must pass.
     // Use none format (no MDS check) + a real AAGUID that's in the fixture to avoid zero-AAGUID

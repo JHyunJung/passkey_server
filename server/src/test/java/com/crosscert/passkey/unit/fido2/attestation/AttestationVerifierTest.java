@@ -53,6 +53,20 @@ class AttestationVerifierTest {
   }
 
   @Test
+  void none_attestation_rejected_in_strict_mode() {
+    // Security regression guard (Codex P1.1): fmt=none has no attestation certificate, so it
+    // cannot chain to an MDS trust anchor. Any non-null trustAnchors signals strict mode.
+    AttestationObject obj = AttestationObject.parse(noneAttestationObject());
+    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource emptySource =
+        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of());
+    assertThatThrownBy(
+            () -> AttestationVerifiers.forFormat("none").verify(obj, new byte[32], emptySource))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.ATTESTATION_INVALID);
+  }
+
+  @Test
   void none_attestation_with_non_empty_statement_is_rejected() {
     Map<Object, Object> attStmt = new LinkedHashMap<>();
     attStmt.put("x", 1L);
