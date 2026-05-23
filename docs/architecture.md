@@ -61,7 +61,7 @@ com.crosscert.passkey
 │   ├── repository                   *Repository
 │   ├── metrics                      CeremonyMetrics (Micrometer counters)
 │   └── metadata                     MdsProperties, MdsBlobProvider, MdsRefreshScheduler,
-│                                    MdsTrustAnchorRepositoryConfig, MdsDiagController (§10)
+│                                    MdsConfig, MdsDiagController (§10)
 ├── auth                             — M3 Auth
 │   ├── jwt                          JwtProperties (32+ bytes secret 강제), JwtConfig,
 │   │                                TokenService (verifyAccess/verifyRefresh), TokenPair
@@ -719,7 +719,7 @@ OpenAPI spec은 서버 부팅 후:
 
 ### 10.1 개요
 
-기본(non-strict) 동작은 자체 FIDO2 코어(`com.crosscert.passkey.fido2`)가 담당 — none / packed self-attestation 검증, attestation cert chain 검증 안 함, AAGUID allow/deny 정책만으로 약식 통제. 위조 하드웨어 키, compromised authenticator를 직접 차단하지는 못함. strict(mdsStrict) 경로는 cert chain + MDS trust anchor 검증이 필요하므로 아직 webauthn4j를 사용한다 (Milestone B에서 자체 코어로 이식 예정).
+기본(non-strict) 동작은 자체 FIDO2 코어(`com.crosscert.passkey.fido2`)가 담당 — none / packed self-attestation 검증, attestation cert chain 검증 안 함, AAGUID allow/deny 정책만으로 약식 통제. 위조 하드웨어 키, compromised authenticator를 직접 차단하지는 못함. strict(mdsStrict) 경로는 cert chain + MDS trust anchor 검증을 자체 코어가 수행한다 — `fido2.mds.MetadataBlob`로 BLOB을 자체 파싱하고, JCA `CertPathValidator`(PKIX)로 attestation cert chain → AAGUID별 trust anchor 검증 (Milestone B Phase 4 완료).
 
 **MDS3 통합 후** (`passkey.mds.enabled=true` + tenant `mdsStrict=true`):
 - 등록 시 FIDO Alliance가 서명한 metadata BLOB의 trust anchor로 attestation cert chain 검증
