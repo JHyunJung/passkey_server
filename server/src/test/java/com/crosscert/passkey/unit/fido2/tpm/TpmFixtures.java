@@ -24,6 +24,40 @@ final class TpmFixtures {
     return buf.array();
   }
 
+  /** Build a minimal TPMT_PUBLIC for ECC P-256. */
+  static byte[] publicEccP256(byte[] x, byte[] y) {
+    // type(2)=0x0023 + nameAlg(2)=0x000B + objectAttributes(4) + authPolicy len(2)=0
+    //   + parameters: symmetric(2)=0x0010 NULL + scheme(2)=0x0010 NULL + curveId(2)=0x0003 P-256
+    //     + kdf(2)=0x0010 NULL
+    //   + unique TPMS_ECC_POINT: x sized + y sized
+    int paramsLen = 2 + 2 + 2 + 2;
+    int len = 2 + 2 + 4 + 2 + paramsLen + 2 + x.length + 2 + y.length;
+    ByteBuffer buf = ByteBuffer.allocate(len);
+    buf.putShort((short) 0x0023); // TPM_ALG_ECC
+    buf.putShort((short) 0x000B); // TPM_ALG_SHA256
+    buf.putInt(0x00050072); // objectAttributes
+    buf.putShort((short) 0); // authPolicy empty
+    buf.putShort((short) 0x0010); // symmetric NULL
+    buf.putShort((short) 0x0010); // scheme NULL
+    buf.putShort((short) 0x0003); // curveId P-256
+    buf.putShort((short) 0x0010); // kdf NULL
+    buf.putShort((short) x.length);
+    buf.put(x);
+    buf.putShort((short) y.length);
+    buf.put(y);
+    return buf.array();
+  }
+
+  /**
+   * Build a TPMT_PUBLIC for ECC with a non-P-256 curve id (for negative tests). curveId offset:
+   * type(2)+nameAlg(2)+objAttr(4)+authPolicyLen(2)+sym(2)+scheme(2) = 14.
+   */
+  static byte[] publicEccWithCurve(int curveId, byte[] x, byte[] y) {
+    byte[] base = publicEccP256(x, y);
+    ByteBuffer.wrap(base).putShort(14, (short) curveId);
+    return base;
+  }
+
   /** Build a minimal TPMT_PUBLIC for RSA 2048. */
   static byte[] publicRsa2048(byte[] modulus) {
     int paramsLen = 2 + 2 + 2 + 4;

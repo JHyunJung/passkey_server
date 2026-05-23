@@ -1,5 +1,7 @@
 package com.crosscert.passkey.fido2.tpm;
 
+import com.crosscert.passkey.fido2.cose.CoseException;
+import com.crosscert.passkey.fido2.cose.CoseKey;
 import java.math.BigInteger;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
@@ -56,6 +58,10 @@ public record TpmtPublic(int type, int nameAlg, PublicKey publicKey) {
     if (exponent == 0L) {
       exponent = 65537L; // TPM spec: 0 means "use the default public exponent of 65537".
     }
+    if (exponent < 3L || (exponent & 1L) == 0L) {
+      throw new TpmException(
+          "TPMT_PUBLIC RSA exponent must be odd and >= 3 (got " + exponent + ")");
+    }
     byte[] modulus = readSized(buf, "RSA modulus");
     if (modulus.length * 8 != keyBits) {
       throw new TpmException(
@@ -84,11 +90,18 @@ public record TpmtPublic(int type, int nameAlg, PublicKey publicKey) {
     }
     byte[] x = readSized(buf, "ECC x");
     byte[] y = readSized(buf, "ECC y");
+    BigInteger xBn = new BigInteger(1, x);
+    BigInteger yBn = new BigInteger(1, y);
+    try {
+      CoseKey.assertOnP256Curve(xBn, yBn);
+    } catch (CoseException e) {
+      throw new TpmException("TPMT_PUBLIC ECC point not on P-256: " + e.getMessage(), e);
+    }
     try {
       AlgorithmParameters params = AlgorithmParameters.getInstance("EC");
       params.init(new ECGenParameterSpec("secp256r1"));
       ECParameterSpec ecSpec = params.getParameterSpec(ECParameterSpec.class);
-      ECPoint point = new ECPoint(new BigInteger(1, x), new BigInteger(1, y));
+      ECPoint point = new ECPoint(xBn, yBn);
       return KeyFactory.getInstance("EC").generatePublic(new ECPublicKeySpec(point, ecSpec));
     } catch (Exception e) {
       throw new TpmException("TPMT_PUBLIC ECC key reconstruction failed", e);

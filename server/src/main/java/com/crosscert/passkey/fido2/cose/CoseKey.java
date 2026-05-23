@@ -80,13 +80,13 @@ public final class CoseKey {
     }
     BigInteger x = new BigInteger(1, asBytes(map.get(-2L), "x"));
     BigInteger y = new BigInteger(1, asBytes(map.get(-3L), "y"));
+    assertOnP256Curve(x, y);
     ECPoint point = new ECPoint(x, y);
     try {
       java.security.AlgorithmParameters params =
           java.security.AlgorithmParameters.getInstance("EC");
       params.init(new java.security.spec.ECGenParameterSpec("secp256r1"));
       ECParameterSpec ecSpec = params.getParameterSpec(ECParameterSpec.class);
-      assertOnP256Curve(point, ecSpec);
       ECPublicKeySpec spec = new ECPublicKeySpec(point, ecSpec);
       return KeyFactory.getInstance("EC").generatePublic(spec);
     } catch (CoseException e) {
@@ -97,20 +97,30 @@ public final class CoseKey {
   }
 
   /**
-   * Validates that {@code point} lies on the P-256 curve. The SunEC provider does not perform
+   * Validates that the point (x, y) lies on the P-256 curve. The SunEC provider does not perform
    * point-on-curve validation when building a public key for signature verification, so an
    * authenticator could otherwise smuggle an off-curve point past registration (invalid curve
    * attack). Checks coordinate range, rejects the point at infinity, and verifies the curve
    * equation y² ≡ x³ + ax + b (mod p).
+   *
+   * <p>Shared with {@code fido2.tpm.TpmtPublic} for defense-in-depth validation of ECC coordinates
+   * parsed from TPMT_PUBLIC structures.
    */
-  private static void assertOnP256Curve(ECPoint point, ECParameterSpec ecSpec) {
-    if (point.equals(ECPoint.POINT_INFINITY)) {
+  public static void assertOnP256Curve(BigInteger x, BigInteger y) {
+    ECParameterSpec ecSpec;
+    try {
+      java.security.AlgorithmParameters params =
+          java.security.AlgorithmParameters.getInstance("EC");
+      params.init(new java.security.spec.ECGenParameterSpec("secp256r1"));
+      ecSpec = params.getParameterSpec(ECParameterSpec.class);
+    } catch (Exception e) {
+      throw new CoseException("failed to obtain P-256 parameters", e);
+    }
+    if (x.signum() == 0 && y.signum() == 0) {
       throw new CoseException("EC public key is the point at infinity");
     }
     EllipticCurve curve = ecSpec.getCurve();
     BigInteger p = ((ECFieldFp) curve.getField()).getP();
-    BigInteger x = point.getAffineX();
-    BigInteger y = point.getAffineY();
     if (x.signum() < 0 || x.compareTo(p) >= 0 || y.signum() < 0 || y.compareTo(p) >= 0) {
       throw new CoseException("EC public key coordinate out of field range");
     }
