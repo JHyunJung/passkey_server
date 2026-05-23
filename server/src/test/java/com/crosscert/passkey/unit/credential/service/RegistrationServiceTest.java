@@ -16,6 +16,7 @@ import com.crosscert.passkey.credential.challenge.ChallengeStore;
 import com.crosscert.passkey.credential.challenge.WebauthnCeremonyProperties;
 import com.crosscert.passkey.credential.domain.Credential;
 import com.crosscert.passkey.credential.domain.TenantWebauthnConfig;
+import com.crosscert.passkey.credential.metadata.MdsConfig.MdsTrustAnchorSourceHolder;
 import com.crosscert.passkey.credential.metrics.CeremonyMetrics;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.credential.repository.TenantAttestationPolicyRepository;
@@ -25,7 +26,6 @@ import com.crosscert.passkey.tenant.context.TenantContext;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
-import com.webauthn4j.WebAuthnManager;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.List;
@@ -55,8 +55,7 @@ class RegistrationServiceTest {
   @Mock private TenantUserRepository userRepo;
   @Mock private CredentialRepository credentialRepo;
   @Mock private ChallengeStore challengeStore;
-  @Mock private WebAuthnManager nonStrictManager;
-  @Mock private ObjectProvider<WebAuthnManager> strictManagerProvider;
+  @Mock private ObjectProvider<MdsTrustAnchorSourceHolder> mdsHolderProvider;
   @Mock private AuditService auditService;
 
   private RegistrationService service;
@@ -83,8 +82,7 @@ class RegistrationServiceTest {
             userRepo,
             credentialRepo,
             challengeStore,
-            nonStrictManager,
-            strictManagerProvider,
+            mdsHolderProvider,
             auditService,
             ceremonyProps,
             metrics);
