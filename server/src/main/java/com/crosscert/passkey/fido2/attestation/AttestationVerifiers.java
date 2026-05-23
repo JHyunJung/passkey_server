@@ -6,8 +6,8 @@ import java.util.Map;
 
 /**
  * Dispatches an attestation {@code fmt} string to its {@link AttestationVerifier}. Registers {@code
- * none}, {@code packed}, and {@code apple} ({@code android-key} is added in Task 7); any other
- * format throws {@code UNSUPPORTED_ATTESTATION_FORMAT} (fail-closed).
+ * none}, {@code packed}, {@code apple}, and {@code android-key}; any other format throws {@code
+ * UNSUPPORTED_ATTESTATION_FORMAT} (fail-closed).
  */
 public final class AttestationVerifiers {
 
@@ -15,7 +15,8 @@ public final class AttestationVerifiers {
       Map.of(
           "none", new NoneAttestationVerifier(),
           "packed", new PackedAttestationVerifier(),
-          "apple", new AppleAnonymousAttestationVerifier());
+          "apple", new AppleAnonymousAttestationVerifier(),
+          "android-key", new AndroidKeyAttestationVerifier());
 
   private AttestationVerifiers() {}
 

@@ -48,6 +48,81 @@ public final class DerUtil {
   }
 
   /**
+   * Extract the {@code attestationChallenge} from an Android Key Attestation extension's {@code
+   * KeyDescription} SEQUENCE. The challenge is the fifth element (zero-based index 4) of the
+   * SEQUENCE — an {@code OCTET STRING} per the Android Keystore key attestation specification.
+   *
+   * <p>Input is the {@code KeyDescription} SEQUENCE itself ({@link
+   * java.security.cert.X509Certificate#getExtensionValue} returns the extension wrapped in an outer
+   * {@code OCTET STRING} which the caller unwraps via {@link #unwrapOctetString} first).
+   *
+   * <p>Element length encoding up to {@code 0x82} (two-byte long-form) is supported inside the
+   * SEQUENCE walk, because {@code softwareEnforced} / {@code teeEnforced} AuthorizationList values
+   * can exceed 255 bytes.
+   */
+  public static byte[] extractAndroidKeyAttestationChallenge(byte[] keyDescriptionDer)
+      throws Fido2VerificationException {
+    byte[] sequenceContent = unwrapTag(keyDescriptionDer, TAG_SEQUENCE, "KeyDescription SEQUENCE");
+    int pos = 0;
+    int index = 0;
+    while (pos < sequenceContent.length) {
+      if (pos + 2 > sequenceContent.length) {
+        throw new Fido2VerificationException(
+            FailureReason.ATTESTATION_INVALID,
+            "KeyDescription SEQUENCE truncated at element " + index);
+      }
+      int tag = sequenceContent[pos] & 0xff;
+      int lengthByte = sequenceContent[pos + 1] & 0xff;
+      int headerLen;
+      int contentLen;
+      if (lengthByte < 0x80) {
+        headerLen = 2;
+        contentLen = lengthByte;
+      } else if (lengthByte == 0x81) {
+        if (pos + 3 > sequenceContent.length) {
+          throw new Fido2VerificationException(
+              FailureReason.ATTESTATION_INVALID,
+              "KeyDescription element length truncated at index " + index);
+        }
+        headerLen = 3;
+        contentLen = sequenceContent[pos + 2] & 0xff;
+      } else if (lengthByte == 0x82) {
+        if (pos + 4 > sequenceContent.length) {
+          throw new Fido2VerificationException(
+              FailureReason.ATTESTATION_INVALID,
+              "KeyDescription element length truncated at index " + index);
+        }
+        headerLen = 4;
+        contentLen = ((sequenceContent[pos + 2] & 0xff) << 8) | (sequenceContent[pos + 3] & 0xff);
+      } else {
+        throw new Fido2VerificationException(
+            FailureReason.ATTESTATION_INVALID,
+            "KeyDescription element has unsupported length encoding at index " + index);
+      }
+      int nextPos = pos + headerLen + contentLen;
+      if (nextPos > sequenceContent.length) {
+        throw new Fido2VerificationException(
+            FailureReason.ATTESTATION_INVALID,
+            "KeyDescription element extends past SEQUENCE at index " + index);
+      }
+      if (index == 4) {
+        // Index 4 must be an OCTET STRING (attestationChallenge).
+        if (tag != TAG_OCTET_STRING) {
+          throw new Fido2VerificationException(
+              FailureReason.ATTESTATION_INVALID,
+              "KeyDescription[4] is not an OCTET STRING (tag 0x" + Integer.toHexString(tag) + ")");
+        }
+        return Arrays.copyOfRange(sequenceContent, pos + headerLen, nextPos);
+      }
+      pos = nextPos;
+      index++;
+    }
+    throw new Fido2VerificationException(
+        FailureReason.ATTESTATION_INVALID,
+        "KeyDescription SEQUENCE has fewer than 5 elements (got " + index + ")");
+  }
+
+  /**
    * Unwrap a DER value of the given tag and return its contents. Supports short-form and the {@code
    * 0x81} long-form length encodings; rejects everything else (long-form {@code 0x82}+,
    * indefinite-length, trailing bytes) as malformed for fail-closed parsing.

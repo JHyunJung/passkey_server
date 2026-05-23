@@ -15,7 +15,10 @@ import com.crosscert.passkey.fido2.model.AttestationObject;
  * Sealed so the supported set is explicit.
  */
 public sealed interface AttestationVerifier
-    permits NoneAttestationVerifier, PackedAttestationVerifier, AppleAnonymousAttestationVerifier {
+    permits NoneAttestationVerifier,
+        PackedAttestationVerifier,
+        AppleAnonymousAttestationVerifier,
+        AndroidKeyAttestationVerifier {
 
   /** The {@code fmt} string this verifier handles. */
   String format();
