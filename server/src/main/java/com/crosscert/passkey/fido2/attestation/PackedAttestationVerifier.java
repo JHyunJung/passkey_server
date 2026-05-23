@@ -88,7 +88,7 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
     if (x5cObj != null) {
       return verifyFull(x5cObj, acd, algValue, signedData, signature, trustAnchors);
     } else {
-      return verifySelf(acd, algValue, signedData, signature);
+      return verifySelf(acd, algValue, signedData, signature, trustAnchors);
     }
   }
 
@@ -290,10 +290,16 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
 
   /**
    * Self attestation (no x5c): verify the signature with the credential public key. The attStmt alg
-   * must equal the credential key's algorithm per WebAuthn L3 §8.2.
+   * must equal the credential key's algorithm per WebAuthn L3 §8.2. When {@code trustAnchors} is
+   * non-null (strict mode) the AAGUID is additionally checked against the MDS — a self-attesting
+   * authenticator that is not in the metadata registry is rejected.
    */
   private static AttestationResult verifySelf(
-      AttestedCredentialData acd, long algValue, byte[] signedData, byte[] signature)
+      AttestedCredentialData acd,
+      long algValue,
+      byte[] signedData,
+      byte[] signature,
+      MdsTrustAnchorSource trustAnchors)
       throws Fido2VerificationException {
     try {
       CoseKey credentialKey = acd.coseKey();
@@ -309,7 +315,18 @@ public final class PackedAttestationVerifier implements AttestationVerifier {
         throw new Fido2VerificationException(
             FailureReason.ATTESTATION_INVALID, "packed self-attestation signature invalid");
       }
-      return new AttestationResult("packed", false);
+      // Strict mode: even self-attesting authenticators must appear in the MDS registry.
+      if (trustAnchors != null) {
+        UUID aaguid = aaguidOf(acd);
+        if (trustAnchors.findEntry(aaguid).isEmpty()) {
+          throw new Fido2VerificationException(
+              FailureReason.MDS_TRUST_FAILED,
+              "no MDS entry for AAGUID "
+                  + aaguid
+                  + " — self-attesting authenticator not in metadata");
+        }
+      }
+      return new AttestationResult("packed", trustAnchors != null);
     } catch (Fido2VerificationException e) {
       throw e;
     } catch (CborDecodeException | CoseException e) {

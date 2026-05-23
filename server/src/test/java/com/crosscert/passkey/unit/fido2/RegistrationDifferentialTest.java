@@ -77,7 +77,8 @@ class RegistrationDifferentialTest {
                             wrongChallenge,
                             java.util.List.of("https://example.com"),
                             "example.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class);
     // webauthn4j — 다른 challenge로 ServerProperty 구성
     WebAuthnManager manager = WebAuthnManager.createNonStrictWebAuthnManager();
@@ -114,7 +115,8 @@ class RegistrationDifferentialTest {
                             r.challenge(),
                             java.util.List.of("https://other.com"),
                             "example.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class);
     // webauthn4j — 다른 origin으로 ServerProperty 구성
     WebAuthnManager manager = WebAuthnManager.createNonStrictWebAuthnManager();
@@ -176,7 +178,8 @@ class RegistrationDifferentialTest {
             reg.challenge(),
             List.of(ORIGIN),
             RP_ID,
-            false);
+            false,
+            null);
     return new RegistrationVerifier().verify(req);
   }
 

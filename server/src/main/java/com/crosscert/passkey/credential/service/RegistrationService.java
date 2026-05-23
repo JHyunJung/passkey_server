@@ -353,7 +353,8 @@ public class RegistrationService {
             Base64UrlCodec.decode(stored.challengeB64u()),
             cfg.originList(),
             cfg.getRpId(),
-            cfg.getUserVerification().isStrictRequired());
+            cfg.getUserVerification().isStrictRequired(),
+            null); // trustAnchors: wired in Task 7 via mdsHolderProvider
     RegistrationVerificationResult result;
     try {
       result = new RegistrationVerifier().verify(verifyReq);

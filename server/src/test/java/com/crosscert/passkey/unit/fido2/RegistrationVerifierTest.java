@@ -26,7 +26,8 @@ class RegistrationVerifierTest {
                     r.challenge(),
                     List.of("https://example.com"),
                     "example.com",
-                    false));
+                    false,
+                    null));
     assertThat(result.attestationFormat()).isEqualTo("none");
     assertThat(result.credentialId()).isEqualTo(r.credentialId());
     assertThat(result.signCount()).isEqualTo(r.signCount());
@@ -45,7 +46,8 @@ class RegistrationVerifierTest {
                     r.challenge(),
                     List.of("https://example.com"),
                     "example.com",
-                    false));
+                    false,
+                    null));
     assertThat(result.attestationFormat()).isEqualTo("packed");
   }
 
@@ -64,7 +66,8 @@ class RegistrationVerifierTest {
                             r.challenge(),
                             List.of("https://example.com"),
                             "example.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.WRONG_CEREMONY_TYPE);
@@ -84,7 +87,8 @@ class RegistrationVerifierTest {
                             "d3Jvbmc".getBytes(java.nio.charset.StandardCharsets.UTF_8),
                             List.of("https://example.com"),
                             "example.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.CHALLENGE_MISMATCH);
@@ -104,7 +108,8 @@ class RegistrationVerifierTest {
                             r.challenge(),
                             List.of("https://other.com"),
                             "example.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.ORIGIN_MISMATCH);
@@ -125,7 +130,8 @@ class RegistrationVerifierTest {
                             r.challenge(),
                             List.of("https://example.com"),
                             "other-rp.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.RPID_HASH_MISMATCH);
@@ -146,7 +152,8 @@ class RegistrationVerifierTest {
                             r.challenge(),
                             List.of("https://example.com"),
                             "example.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.UP_FLAG_MISSING);
@@ -167,7 +174,8 @@ class RegistrationVerifierTest {
                             r.challenge(),
                             List.of("https://example.com"),
                             "example.com",
-                            true)))
+                            true,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.UV_FLAG_REQUIRED);
@@ -187,7 +195,8 @@ class RegistrationVerifierTest {
                             r.challenge(),
                             List.of("https://example.com"),
                             "example.com",
-                            false)))
+                            false,
+                            null)))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.MALFORMED_CBOR);
@@ -199,7 +208,8 @@ class RegistrationVerifierTest {
             () ->
                 new RegistrationVerifier()
                     .verify(
-                        new RegistrationVerificationRequest(null, null, null, null, null, false)))
+                        new RegistrationVerificationRequest(
+                            null, null, null, null, null, false, null)))
         .isInstanceOf(Fido2VerificationException.class);
   }
 
@@ -227,7 +237,8 @@ class RegistrationVerifierTest {
                     challenge,
                     java.util.List.of("https://example.com"),
                     "example.com",
-                    false));
+                    false,
+                    null));
     assertThat(result.crossOrigin()).isTrue();
   }
 
@@ -244,7 +255,8 @@ class RegistrationVerifierTest {
                     r.challenge(),
                     java.util.List.of("https://example.com"),
                     "example.com",
-                    false));
+                    false,
+                    null));
     assertThat(result.crossOrigin()).isFalse();
   }
 
@@ -263,7 +275,8 @@ class RegistrationVerifierTest {
                     r.challenge(),
                     List.of("https://example.com"),
                     "example.com",
-                    false));
+                    false,
+                    null));
     com.crosscert.passkey.fido2.model.AttestedCredentialData parsed =
         com.crosscert.passkey.fido2.model.AttestedCredentialData.parse(
             result.attestedCredentialData());
