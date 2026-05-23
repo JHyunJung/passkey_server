@@ -14,8 +14,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 /**
- * M1 architecture invariants. Eight rules — see Plan §3.4 (Rule 7: fido2 core purity; Rule 8: no
- * webauthn4j anywhere).
+ * M1 architecture invariants. Nine rules — see Plan §3.4 (Rule 7: fido2 core purity; Rule 8: no
+ * webauthn4j anywhere; Rule 9: metadata package must not depend on admin package).
  */
 class PackageArchitectureTest {
 
@@ -161,6 +161,25 @@ class PackageArchitectureTest {
         .should()
         .dependOnClassesThat()
         .resideInAnyPackage("com.webauthn4j..")
+        .check(CLASSES);
+  }
+
+  // Rule 9: the credential.metadata package — MDS BLOB refresh + post-refresh revocation scan —
+  // runs on the cron path, independently of any admin console interaction. A dependency on the
+  // admin package would force the cron job to load admin configuration (security filters, authz
+  // beans, controllers) just to scan for revoked authenticators, which is both a layering smell
+  // and a deployment risk (cron pods that should not need admin config would fail to start).
+  @Test
+  void mds_metadata_package_does_not_depend_on_admin() {
+    noClasses()
+        .that()
+        .resideInAPackage("..credential.metadata..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAPackage("..admin..")
+        .because(
+            "MDS revocation scan must run independently of admin console (cron path);"
+                + " a dependency on admin would force the cron job to load admin config.")
         .check(CLASSES);
   }
 
