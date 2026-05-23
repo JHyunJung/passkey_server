@@ -120,9 +120,10 @@ class PackageArchitectureTest {
 
   // Rule 7: the fido2 core is a pure WebAuthn implementation — it must not depend on any domain
   // package, on Spring, or on the application's exception types. Only java.*/javax.* (JCA, LDAP
-  // name parsing) + the fido2 package itself + Jackson (clientDataJSON parsing) + the test-only
-  // BouncyCastle attestation-cert builder are permitted. The domain packages are fully qualified
-  // under ROOT so the pattern does not accidentally match JDK packages such as javax.security.auth.
+  // name parsing) + the fido2 package itself + Jackson (clientDataJSON parsing) + nimbus-jose-jwt
+  // (MDS3 BLOB JWS verification, Phase 3) + the test-only BouncyCastle attestation-cert builder
+  // are permitted. The domain packages are fully qualified under ROOT so the pattern does not
+  // accidentally match JDK packages such as javax.security.auth.
   @Test
   void fido2_core_is_pure() {
     noClasses()
