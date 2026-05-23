@@ -21,6 +21,15 @@ public class Fido2VerificationException extends Exception {
     NO_ATTESTED_CREDENTIAL,
     UNSUPPORTED_ALGORITHM,
     UNSUPPORTED_ATTESTATION_FORMAT,
+    /**
+     * The attestation statement is structurally invalid or contradicts policy (e.g. tpm ver=1.2).
+     */
+    INVALID_ATTESTATION_FORMAT,
+    /**
+     * A TPM 2.0 structure (TPMS_ATTEST / TPMT_PUBLIC) failed to parse or was internally
+     * inconsistent.
+     */
+    INVALID_TPM_STRUCTURE,
     ATTESTATION_INVALID,
     SIGNATURE_INVALID,
     /** The attestation certificate chain does not validate to an MDS trust anchor. */

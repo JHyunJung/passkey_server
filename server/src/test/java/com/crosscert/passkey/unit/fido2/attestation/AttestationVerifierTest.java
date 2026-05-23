@@ -65,7 +65,7 @@ class AttestationVerifierTest {
 
   @Test
   void unsupported_format_is_rejected() {
-    assertThatThrownBy(() -> AttestationVerifiers.forFormat("tpm"))
+    assertThatThrownBy(() -> AttestationVerifiers.forFormat("unknown-format"))
         .isInstanceOf(Fido2VerificationException.class)
         .extracting(e -> ((Fido2VerificationException) e).reason())
         .isEqualTo(FailureReason.UNSUPPORTED_ATTESTATION_FORMAT);
