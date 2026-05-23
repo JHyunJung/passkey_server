@@ -317,9 +317,11 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
         beginUnderTenant("user-none-strict", "None Attestation User");
     byte[] clientDataJson = buildClientDataJson(options.challenge(), RP_ORIGIN);
 
-    // Build none attestation: fmt=none, attStmt={}, any random AAGUID.
+    // Use a fixture-registered AAGUID so we exercise the strict-tenant + none-fmt bypass —
+    // NoneAttestationVerifier does not consult MDS.
     byte[] rpIdHash = sha256(RP_ID.getBytes(StandardCharsets.UTF_8));
-    byte[] aaguidBytes = new byte[16]; // all zeros — none fmt ignores AAGUID
+    byte[] packedAaguidBytes =
+        MdsBlobFixtureBuilder.uuidToBytes(MdsBlobFixtureBuilder.PACKED_AAGUID);
 
     java.security.KeyPairGenerator ecGen = java.security.KeyPairGenerator.getInstance("EC");
     ecGen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
@@ -327,26 +329,12 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
     byte[] coseKey =
         MdsBlobFixtureBuilder.ecCoseKey(
             (java.security.interfaces.ECPublicKey) credPair.getPublic());
-    byte[] authData = buildAuthData(rpIdHash, aaguidBytes, coseKey);
+    byte[] authDataWithAaguid = buildAuthData(rpIdHash, packedAaguidBytes, coseKey);
 
     java.util.Map<Object, Object> attStmt = new java.util.LinkedHashMap<>();
     java.util.Map<Object, Object> ao = new java.util.LinkedHashMap<>();
     ao.put("fmt", "none");
     ao.put("attStmt", attStmt);
-    ao.put("authData", authData);
-    byte[] attObj = MdsBlobFixtureBuilder.cborEncodeMap(ao);
-
-    // none + zero AAGUID: the policy has allowZeroAaguid=false so this must be rejected.
-    // BUT none attestation with zero AAGUID hits the policy's allowZeroAaguid check, not the
-    // MDS trust check. The MDS trust path is not invoked for fmt=none.
-    // With allowZeroAaguid=false (strict policy), zero AAGUID will fail at AAGUID_NOT_ALLOWED.
-    // To test that none fmt's MDS path is bypassed, we need a real (non-zero) AAGUID that IS in
-    // MDS.
-    // Let's use PACKED_AAGUID in the authData for none attestation — the policy allows ANY mode
-    // and the AAGUID is in MDS. NoneAttestationVerifier doesn't check MDS at all.
-    byte[] packedAaguidBytes =
-        MdsBlobFixtureBuilder.uuidToBytes(MdsBlobFixtureBuilder.PACKED_AAGUID);
-    byte[] authDataWithAaguid = buildAuthData(rpIdHash, packedAaguidBytes, coseKey);
     ao.put("authData", authDataWithAaguid);
     byte[] attObjWithAaguid = MdsBlobFixtureBuilder.cborEncodeMap(ao);
 
@@ -365,57 +353,20 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
   }
 
   // ========================================================================================
-  // Test 6: packed full — reject when zero AAGUID (none fmt bypasses MDS but policy blocks it).
+  // Test 6: packed full — reject when zero AAGUID (MDS allows it, policy blocks it).
   // ========================================================================================
 
   @Test
   void packed_full_strict_rejected_when_zero_aaguid_and_policy_disallows() throws Exception {
-    // The strict policy sets allowZeroAaguid=false. A registration with the all-zero AAGUID must
-    // be rejected with AAGUID_NOT_ALLOWED regardless of MDS status.
-    UUID zeroAaguid = new UUID(0L, 0L);
-
-    java.security.KeyPairGenerator ecGen = java.security.KeyPairGenerator.getInstance("EC");
-    ecGen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
-    java.security.KeyPair rootPair = ecGen.generateKeyPair();
-    java.security.KeyPair leafPair = ecGen.generateKeyPair();
-    java.security.cert.X509Certificate leafCert =
-        MdsBlobFixtureBuilder.issued(
-            leafPair,
-            MdsBlobFixtureBuilder.ATT_OU_DN,
-            rootPair,
-            "CN=Zero Root, O=Test, C=US",
-            false,
-            zeroAaguid);
+    // ZERO_AAGUID is registered in the fixture MDS as FIDO_CERTIFIED so that the MDS trust check
+    // passes, and the policy layer (allowZeroAaguid=false) is actually reached and fires.
+    // This verifies that AAGUID_NOT_ALLOWED is returned — not MDS_TRUST_FAILED.
+    MdsBlobFixtureBuilder.AaguidFixture f = FIXTURE.scenarioFor(MdsBlobFixtureBuilder.ZERO_AAGUID);
 
     RegistrationOptionsResponse options = beginUnderTenant("user-zero-aaguid", "Zero AAGUID User");
     byte[] clientDataJson = buildClientDataJson(options.challenge(), RP_ORIGIN);
     byte[] clientDataHash = sha256(clientDataJson);
-
-    byte[] rpIdHash = sha256(RP_ID.getBytes(StandardCharsets.UTF_8));
-    byte[] aaguidBytes = new byte[16]; // all zeros
-    java.security.KeyPair credPair = ecGen.generateKeyPair();
-    byte[] coseKey =
-        MdsBlobFixtureBuilder.ecCoseKey(
-            (java.security.interfaces.ECPublicKey) credPair.getPublic());
-    byte[] authData = buildAuthData(rpIdHash, aaguidBytes, coseKey);
-
-    java.io.ByteArrayOutputStream signed = new java.io.ByteArrayOutputStream();
-    signed.writeBytes(authData);
-    signed.writeBytes(clientDataHash);
-    java.security.Signature sig = java.security.Signature.getInstance("SHA256withECDSA");
-    sig.initSign(leafPair.getPrivate());
-    sig.update(signed.toByteArray());
-    byte[] signature = sig.sign();
-
-    java.util.Map<Object, Object> attStmt = new java.util.LinkedHashMap<>();
-    attStmt.put("alg", -7L);
-    attStmt.put("sig", signature);
-    attStmt.put("x5c", List.of(leafCert.getEncoded()));
-    java.util.Map<Object, Object> ao = new java.util.LinkedHashMap<>();
-    ao.put("fmt", "packed");
-    ao.put("attStmt", attStmt);
-    ao.put("authData", authData);
-    byte[] attObj = MdsBlobFixtureBuilder.cborEncodeMap(ao);
+    byte[] attObj = f.buildPackedFullAttestationObject(clientDataHash, RP_ID);
 
     RegistrationVerifyRequest req =
         new RegistrationVerifyRequest(
@@ -429,7 +380,7 @@ class RegistrationStrictIntegrationTest extends IntegrationTestBase {
     assertThatThrownBy(() -> finishUnderTenant(req))
         .isInstanceOf(BusinessException.class)
         .extracting(e -> ((BusinessException) e).getErrorCode())
-        .isIn(ErrorCode.AAGUID_NOT_ALLOWED, ErrorCode.MDS_TRUST_FAILED);
+        .isEqualTo(ErrorCode.AAGUID_NOT_ALLOWED);
   }
 
   // ========================================================================================

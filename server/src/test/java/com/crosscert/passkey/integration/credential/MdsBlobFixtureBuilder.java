@@ -53,6 +53,13 @@ public final class MdsBlobFixtureBuilder {
   public static final UUID TPM_AAGUID = UUID.fromString("66666666-6666-6666-6666-666666666666");
   public static final UUID REVOKED_AAGUID = UUID.fromString("77777777-7777-7777-7777-777777777777");
 
+  /**
+   * The all-zero AAGUID (§6.1 "no AAGUID" sentinel). Registered in the fixture MDS as
+   * FIDO_CERTIFIED so that the MDS trust check passes and the policy layer (allowZeroAaguid=false)
+   * is actually reached in Test 6.
+   */
+  public static final UUID ZERO_AAGUID = UUID.fromString("00000000-0000-0000-0000-000000000000");
+
   private final Map<UUID, AaguidFixture> fixturesByAaguid = new LinkedHashMap<>();
 
   private MdsBlobFixtureBuilder() {}
@@ -68,6 +75,7 @@ public final class MdsBlobFixtureBuilder {
     b.addAaguid(ANDROID_KEY_AAGUID, StatusReport.FIDO_CERTIFIED);
     b.addAaguid(TPM_AAGUID, StatusReport.FIDO_CERTIFIED);
     b.addAaguid(REVOKED_AAGUID, StatusReport.REVOKED);
+    b.addAaguid(ZERO_AAGUID, StatusReport.FIDO_CERTIFIED);
     return b;
   }
 
