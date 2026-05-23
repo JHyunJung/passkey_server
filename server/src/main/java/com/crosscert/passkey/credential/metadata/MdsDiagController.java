@@ -3,7 +3,7 @@ package com.crosscert.passkey.credential.metadata;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
 import com.crosscert.passkey.common.response.ApiResponse;
-import com.webauthn4j.metadata.data.MetadataBLOB;
+import com.crosscert.passkey.fido2.mds.MetadataBlob;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -64,16 +64,16 @@ public class MdsDiagController {
       return body;
     }
     Instant lastFetched = provider.getLastFetched().get();
-    MetadataBLOB blob = provider.getLastBlob().get();
+    MetadataBlob blob = provider.getLastBlob().get();
     if (blob == null || lastFetched == null) {
       body.put("status", "NEVER_FETCHED");
       return body;
     }
     body.put("status", "READY");
     body.put("lastFetched", lastFetched.toString());
-    body.put("entryCount", blob.getPayload().getEntries().size());
-    body.put("nextUpdate", blob.getPayload().getNextUpdate());
-    body.put("serialNumber", blob.getPayload().getNo());
+    body.put("entryCount", blob.entries().size());
+    body.put("nextUpdate", blob.nextUpdate());
+    body.put("serialNumber", blob.serialNumber());
     return body;
   }
 

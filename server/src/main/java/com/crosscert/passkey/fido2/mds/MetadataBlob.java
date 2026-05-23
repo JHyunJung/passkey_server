@@ -36,10 +36,12 @@ public final class MetadataBlob {
 
   private final List<MetadataEntry> entries;
   private final String nextUpdate;
+  private final Integer serialNumber;
 
-  private MetadataBlob(List<MetadataEntry> entries, String nextUpdate) {
+  private MetadataBlob(List<MetadataEntry> entries, String nextUpdate, Integer serialNumber) {
     this.entries = entries;
     this.nextUpdate = nextUpdate;
+    this.serialNumber = serialNumber;
   }
 
   /** The MDS entries, one per authenticator AAGUID. */
@@ -50,6 +52,14 @@ public final class MetadataBlob {
   /** The BLOB's declared {@code nextUpdate} date string (informational). */
   public String nextUpdate() {
     return nextUpdate;
+  }
+
+  /**
+   * The BLOB's serial number ({@code no} field in the MDS3 JSON payload). May be null for BLOBs
+   * that omit the field.
+   */
+  public Integer serialNumber() {
+    return serialNumber;
   }
 
   /**
@@ -151,8 +161,11 @@ public final class MetadataBlob {
         }
       }
       JsonNode nextUpdate = root.get("nextUpdate");
+      JsonNode no = root.get("no");
       return new MetadataBlob(
-          Collections.unmodifiableList(entries), nextUpdate == null ? null : nextUpdate.asText());
+          Collections.unmodifiableList(entries),
+          nextUpdate == null ? null : nextUpdate.asText(),
+          no == null || no.isNull() ? null : no.intValue());
     } catch (MdsException e) {
       throw e;
     } catch (Exception e) {
