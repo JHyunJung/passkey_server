@@ -19,6 +19,8 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.ExtendedKeyUsage;
@@ -28,6 +30,7 @@ import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.asn1.x509.KeyPurposeId;
 import org.bouncycastle.asn1.x509.OtherName;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v1CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
@@ -162,6 +165,37 @@ final class TpmFixture {
     X509Certificate certWithoutSan = buildAikCert(aikKeyPair, aikKeyPair, true, false);
     Map<Object, Object> attStmt = parseAttStmt();
     attStmt.put("x5c", List.<Object>of(certWithoutSan.getEncoded()));
+    return rebuildAttObj(attStmt);
+  }
+
+  /** Return a fixture with a CA=true AIK cert (exercises the CA=false enforcement). */
+  TpmFixture withCaTrueAikCert() throws Exception {
+    X509Certificate caTrueCert = buildAikCertWithBasicConstraints(aikKeyPair, aikKeyPair, true);
+    Map<Object, Object> attStmt = parseAttStmt();
+    attStmt.put("x5c", List.<Object>of(caTrueCert.getEncoded()));
+    return rebuildAttObj(attStmt);
+  }
+
+  /** Return a fixture with an X.509 v1 AIK cert (exercises the version=3 enforcement). */
+  TpmFixture withV1AikCert() throws Exception {
+    X509Certificate v1Cert = buildV1AikCert(aikKeyPair, aikKeyPair);
+    Map<Object, Object> attStmt = parseAttStmt();
+    attStmt.put("x5c", List.<Object>of(v1Cert.getEncoded()));
+    return rebuildAttObj(attStmt);
+  }
+
+  /**
+   * Return a fixture with a FIDO AAGUID extension in the AIK cert that does NOT match the
+   * credential's AAGUID (which is all-zeros in the fixture).
+   */
+  TpmFixture withMismatchedAikAaguidExtension() throws Exception {
+    // Credential AAGUID in the fixture is all-zeros. Use {0x01, 0x00, ...} to mismatch.
+    byte[] mismatchedAaguid = new byte[16];
+    mismatchedAaguid[0] = 0x01;
+    X509Certificate certWithAaguid =
+        buildAikCertWithAaguidExtension(aikKeyPair, aikKeyPair, mismatchedAaguid);
+    Map<Object, Object> attStmt = parseAttStmt();
+    attStmt.put("x5c", List.<Object>of(certWithAaguid.getEncoded()));
     return rebuildAttObj(attStmt);
   }
 
@@ -530,6 +564,116 @@ final class TpmFixture {
         .getCertificate(
             builder.build(
                 new JcaContentSignerBuilder(issuerSigAlg).build(issuerPair.getPrivate())));
+  }
+
+  /**
+   * Build an AIK cert with BasicConstraints CA set to {@code caValue} (true → CA cert, false →
+   * leaf). All other fields (EKU, SAN) are present and valid so that only the CA flag triggers
+   * rejection.
+   */
+  private static X509Certificate buildAikCertWithBasicConstraints(
+      KeyPair subjectPair, KeyPair issuerPair, boolean caValue) throws Exception {
+    Instant now = Instant.now();
+    X500Name subject = new X500Name("CN=TPM AIK Test");
+    X500Name issuer = new X500Name("CN=TPM AIK Test");
+    JcaX509v3CertificateBuilder builder =
+        new JcaX509v3CertificateBuilder(
+            issuer,
+            BigInteger.valueOf(System.nanoTime()),
+            Date.from(now.minus(1, ChronoUnit.DAYS)),
+            Date.from(now.plus(365, ChronoUnit.DAYS)),
+            subject,
+            subjectPair.getPublic());
+
+    builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(caValue));
+    builder.addExtension(
+        Extension.extendedKeyUsage,
+        false,
+        new ExtendedKeyUsage(
+            new KeyPurposeId[] {
+              KeyPurposeId.getInstance(new ASN1ObjectIdentifier(TPM_AIK_EKU_OID))
+            }));
+    ASN1ObjectIdentifier sanOid = new ASN1ObjectIdentifier(TPM_MANUFACTURER_OID);
+    org.bouncycastle.asn1.DERUTF8String mfrValue =
+        new org.bouncycastle.asn1.DERUTF8String("id:4e544300");
+    OtherName otherName = new OtherName(sanOid, mfrValue);
+    GeneralNames san = new GeneralNames(new GeneralName(GeneralName.otherName, otherName));
+    builder.addExtension(Extension.subjectAlternativeName, false, san);
+
+    return new JcaX509CertificateConverter()
+        .getCertificate(
+            builder.build(
+                new JcaContentSignerBuilder("SHA256withRSA").build(issuerPair.getPrivate())));
+  }
+
+  /**
+   * Build an X.509 v1 AIK certificate. JcaX509v1CertificateBuilder produces v1 certs that have no
+   * extension support, so the version check fires before EKU / SAN checks.
+   */
+  private static X509Certificate buildV1AikCert(KeyPair subjectPair, KeyPair issuerPair)
+      throws Exception {
+    Instant now = Instant.now();
+    X500Name subject = new X500Name("CN=TPM AIK Test");
+    X500Name issuer = new X500Name("CN=TPM AIK Test");
+    JcaX509v1CertificateBuilder builder =
+        new JcaX509v1CertificateBuilder(
+            issuer,
+            BigInteger.valueOf(System.nanoTime()),
+            Date.from(now.minus(1, ChronoUnit.DAYS)),
+            Date.from(now.plus(365, ChronoUnit.DAYS)),
+            subject,
+            subjectPair.getPublic());
+    return new JcaX509CertificateConverter()
+        .getCertificate(
+            builder.build(
+                new JcaContentSignerBuilder("SHA256withRSA").build(issuerPair.getPrivate())));
+  }
+
+  /**
+   * Build an AIK cert that includes the FIDO AAGUID extension (OID 1.3.6.1.4.1.45724.1.1.4) with
+   * the given {@code aaguidBytes}. The extension value is an OCTET STRING wrapping the 16-byte
+   * AAGUID — matching the two-level unwrap in {@code TpmAttestationVerifier.fidoAaguidExtension}.
+   */
+  private static X509Certificate buildAikCertWithAaguidExtension(
+      KeyPair subjectPair, KeyPair issuerPair, byte[] aaguidBytes) throws Exception {
+    Instant now = Instant.now();
+    X500Name subject = new X500Name("CN=TPM AIK Test");
+    X500Name issuer = new X500Name("CN=TPM AIK Test");
+    JcaX509v3CertificateBuilder builder =
+        new JcaX509v3CertificateBuilder(
+            issuer,
+            BigInteger.valueOf(System.nanoTime()),
+            Date.from(now.minus(1, ChronoUnit.DAYS)),
+            Date.from(now.plus(365, ChronoUnit.DAYS)),
+            subject,
+            subjectPair.getPublic());
+
+    builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
+    builder.addExtension(
+        Extension.extendedKeyUsage,
+        false,
+        new ExtendedKeyUsage(
+            new KeyPurposeId[] {
+              KeyPurposeId.getInstance(new ASN1ObjectIdentifier(TPM_AIK_EKU_OID))
+            }));
+    ASN1ObjectIdentifier sanOid = new ASN1ObjectIdentifier(TPM_MANUFACTURER_OID);
+    org.bouncycastle.asn1.DERUTF8String mfrValue =
+        new org.bouncycastle.asn1.DERUTF8String("id:4e544300");
+    OtherName otherName = new OtherName(sanOid, mfrValue);
+    GeneralNames san = new GeneralNames(new GeneralName(GeneralName.otherName, otherName));
+    builder.addExtension(Extension.subjectAlternativeName, false, san);
+
+    // FIDO AAGUID extension: extension value is an OCTET STRING containing the 16-byte AAGUID.
+    // BouncyCastle addExtension wraps the provided bytes in the outer OCTET STRING that
+    // getExtensionValue() returns; the inner OCTET STRING is what we encode here.
+    ASN1ObjectIdentifier fidoAaguidOid = new ASN1ObjectIdentifier("1.3.6.1.4.1.45724.1.1.4");
+    DEROctetString innerOctetString = new DEROctetString(aaguidBytes);
+    builder.addExtension(fidoAaguidOid, false, innerOctetString);
+
+    return new JcaX509CertificateConverter()
+        .getCertificate(
+            builder.build(
+                new JcaContentSignerBuilder("SHA256withRSA").build(issuerPair.getPrivate())));
   }
 
   // ── CBOR parse helpers for mutation builders ───────────────────────────────────────────────────

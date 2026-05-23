@@ -178,6 +178,41 @@ class TpmAttestationVerifierTest {
         .isEqualTo(FailureReason.SIGNATURE_INVALID);
   }
 
+  // ── AIK cert 음성 테스트 (opus 코드리뷰 후속) ────────────────────────────────────────────────────
+
+  @Test
+  void rejects_aik_cert_with_ca_true() throws Exception {
+    TpmFixture f = TpmFixture.validRsa("example.com").withCaTrueAikCert();
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.ATTESTATION_INVALID);
+  }
+
+  @Test
+  void rejects_aik_cert_v1() throws Exception {
+    TpmFixture f = TpmFixture.validRsa("example.com").withV1AikCert();
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.ATTESTATION_INVALID);
+  }
+
+  @Test
+  void rejects_aik_cert_with_mismatched_aaguid_extension() throws Exception {
+    TpmFixture f = TpmFixture.validRsa("example.com").withMismatchedAikAaguidExtension();
+    AttestationObject obj = AttestationObject.parse(f.attestationObject());
+
+    assertThatThrownBy(() -> verifier.verify(obj, sha256(f.clientDataJson()), null))
+        .isInstanceOf(Fido2VerificationException.class)
+        .extracting(e -> ((Fido2VerificationException) e).reason())
+        .isEqualTo(FailureReason.ATTESTATION_INVALID);
+  }
+
   private static byte[] sha256(byte[] data) throws Exception {
     return MessageDigest.getInstance("SHA-256").digest(data);
   }
