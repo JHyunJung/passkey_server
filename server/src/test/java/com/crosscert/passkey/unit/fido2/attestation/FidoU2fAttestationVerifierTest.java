@@ -157,19 +157,7 @@ class FidoU2fAttestationVerifierTest {
   }
 
   private static X509Certificate buildSelfSignedCa(KeyPair pair, String dn) throws Exception {
-    Instant now = Instant.now();
-    JcaX509v3CertificateBuilder builder =
-        new JcaX509v3CertificateBuilder(
-            new X500Name(dn),
-            BigInteger.valueOf(System.nanoTime()),
-            Date.from(now.minus(1, ChronoUnit.DAYS)),
-            Date.from(now.plus(365, ChronoUnit.DAYS)),
-            new X500Name(dn),
-            pair.getPublic());
-    builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
-    return new JcaX509CertificateConverter()
-        .getCertificate(
-            builder.build(new JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate())));
+    return AttestationTestCerts.selfSignedCa(pair, dn);
   }
 
   // ── U2fFixture ─────────────────────────────────────────────────────────

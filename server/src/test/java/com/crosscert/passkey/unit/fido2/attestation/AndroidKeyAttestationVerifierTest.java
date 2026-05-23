@@ -7,14 +7,20 @@ import com.crosscert.passkey.fido2.Fido2VerificationException;
 import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
 import com.crosscert.passkey.fido2.attestation.AndroidKeyAttestationVerifier;
 import com.crosscert.passkey.fido2.attestation.AttestationResult;
+import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
+import com.crosscert.passkey.fido2.mds.MetadataEntry;
+import com.crosscert.passkey.fido2.mds.StatusReport;
 import com.crosscert.passkey.fido2.model.AttestationObject;
 import com.crosscert.passkey.unit.fido2.CborTestEncoder;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.Signature;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
@@ -24,6 +30,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.bouncycastle.asn1.ASN1EncodableVector;
 import org.bouncycastle.asn1.ASN1Enumerated;
 import org.bouncycastle.asn1.ASN1Integer;
@@ -77,16 +84,13 @@ class AndroidKeyAttestationVerifierTest {
   void strict_android_key_attestation_passes_with_trusted_anchor() throws Exception {
     Fixture f = Fixture.build(true, true);
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
-    java.util.UUID aaguid = aaguidOfAttestation(obj);
-    java.security.cert.X509Certificate selfCert = leafOf(obj);
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource source =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
-            java.util.List.of(
-                new com.crosscert.passkey.fido2.mds.MetadataEntry(
-                    aaguid,
-                    java.util.List.of(selfCert),
-                    java.util.List.of(
-                        com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED))));
+    UUID aaguid = aaguidOfAttestation(obj);
+    X509Certificate selfCert = leafOf(obj);
+    MdsTrustAnchorSource source =
+        new MdsTrustAnchorSource(
+            List.of(
+                new MetadataEntry(
+                    aaguid, List.of(selfCert), List.of(StatusReport.FIDO_CERTIFIED))));
     AttestationResult result =
         new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, source);
     assertThat(result.format()).isEqualTo("android-key");
@@ -97,19 +101,16 @@ class AndroidKeyAttestationVerifierTest {
   void strict_android_key_attestation_rejects_untrusted_chain() throws Exception {
     Fixture f = Fixture.build(true, true);
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
-    java.security.KeyPairGenerator gen = java.security.KeyPairGenerator.getInstance("EC");
-    gen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
-    java.security.KeyPair otherPair = gen.generateKeyPair();
-    java.security.cert.X509Certificate unrelatedRoot = selfSignedCa(otherPair, "CN=Unrelated Root");
-    java.util.UUID aaguid = aaguidOfAttestation(obj);
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource source =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
-            java.util.List.of(
-                new com.crosscert.passkey.fido2.mds.MetadataEntry(
-                    aaguid,
-                    java.util.List.of(unrelatedRoot),
-                    java.util.List.of(
-                        com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED))));
+    KeyPairGenerator gen = KeyPairGenerator.getInstance("EC");
+    gen.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair otherPair = gen.generateKeyPair();
+    X509Certificate unrelatedRoot = selfSignedCa(otherPair, "CN=Unrelated Root");
+    UUID aaguid = aaguidOfAttestation(obj);
+    MdsTrustAnchorSource source =
+        new MdsTrustAnchorSource(
+            List.of(
+                new MetadataEntry(
+                    aaguid, List.of(unrelatedRoot), List.of(StatusReport.FIDO_CERTIFIED))));
     assertThatThrownBy(
             () -> new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, source))
         .isInstanceOf(Fido2VerificationException.class)
@@ -122,8 +123,7 @@ class AndroidKeyAttestationVerifierTest {
     Fixture f = Fixture.build(true, true);
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
     // empty source — no entries at all → MDS_TRUST_FAILED
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource empty =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of());
+    MdsTrustAnchorSource empty = new MdsTrustAnchorSource(List.of());
     assertThatThrownBy(
             () -> new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, empty))
         .isInstanceOf(Fido2VerificationException.class)
@@ -135,15 +135,11 @@ class AndroidKeyAttestationVerifierTest {
   void strict_android_key_attestation_rejects_revoked_authenticator() throws Exception {
     Fixture f = Fixture.build(true, true);
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
-    java.util.UUID aaguid = aaguidOfAttestation(obj);
-    java.security.cert.X509Certificate selfCert = leafOf(obj);
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource revokedSource =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
-            java.util.List.of(
-                new com.crosscert.passkey.fido2.mds.MetadataEntry(
-                    aaguid,
-                    java.util.List.of(selfCert),
-                    java.util.List.of(com.crosscert.passkey.fido2.mds.StatusReport.REVOKED))));
+    UUID aaguid = aaguidOfAttestation(obj);
+    X509Certificate selfCert = leafOf(obj);
+    MdsTrustAnchorSource revokedSource =
+        new MdsTrustAnchorSource(
+            List.of(new MetadataEntry(aaguid, List.of(selfCert), List.of(StatusReport.REVOKED))));
     assertThatThrownBy(
             () -> new AndroidKeyAttestationVerifier().verify(obj, f.clientDataHash, revokedSource))
         .isInstanceOf(Fido2VerificationException.class)
@@ -153,39 +149,21 @@ class AndroidKeyAttestationVerifierTest {
 
   // ----- Test helpers ---------------------------------------------------------------------------
 
-  private static java.util.UUID aaguidOfAttestation(AttestationObject obj) {
+  private static UUID aaguidOfAttestation(AttestationObject obj) {
     byte[] aaguidBytes = obj.authenticatorData().attestedCredentialData().aaguid();
-    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(aaguidBytes);
-    return new java.util.UUID(buf.getLong(), buf.getLong());
+    ByteBuffer buf = ByteBuffer.wrap(aaguidBytes);
+    return new UUID(buf.getLong(), buf.getLong());
   }
 
-  private static java.security.cert.X509Certificate leafOf(AttestationObject obj) throws Exception {
-    byte[] certDer = (byte[]) ((java.util.List<?>) obj.attestationStatement().get("x5c")).get(0);
-    return (java.security.cert.X509Certificate)
-        java.security.cert.CertificateFactory.getInstance("X.509")
-            .generateCertificate(new java.io.ByteArrayInputStream(certDer));
+  private static X509Certificate leafOf(AttestationObject obj) throws Exception {
+    byte[] certDer = (byte[]) ((List<?>) obj.attestationStatement().get("x5c")).get(0);
+    return (X509Certificate)
+        CertificateFactory.getInstance("X.509")
+            .generateCertificate(new ByteArrayInputStream(certDer));
   }
 
-  private static java.security.cert.X509Certificate selfSignedCa(
-      java.security.KeyPair pair, String dn) throws Exception {
-    java.time.Instant now = java.time.Instant.now();
-    org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder builder =
-        new org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
-            new org.bouncycastle.asn1.x500.X500Name(dn),
-            java.math.BigInteger.valueOf(System.nanoTime()),
-            java.util.Date.from(now.minus(1, java.time.temporal.ChronoUnit.DAYS)),
-            java.util.Date.from(now.plus(365, java.time.temporal.ChronoUnit.DAYS)),
-            new org.bouncycastle.asn1.x500.X500Name(dn),
-            pair.getPublic());
-    builder.addExtension(
-        org.bouncycastle.asn1.x509.Extension.basicConstraints,
-        true,
-        new org.bouncycastle.asn1.x509.BasicConstraints(true));
-    return new org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
-        .getCertificate(
-            builder.build(
-                new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA")
-                    .build(pair.getPrivate())));
+  private static X509Certificate selfSignedCa(KeyPair pair, String dn) throws Exception {
+    return AttestationTestCerts.selfSignedCa(pair, dn);
   }
 
   // ----- Fixture builder (Apple 패턴 재사용) ---------------------------------------------------

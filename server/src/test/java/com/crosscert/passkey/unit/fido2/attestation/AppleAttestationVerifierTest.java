@@ -7,13 +7,19 @@ import com.crosscert.passkey.fido2.Fido2VerificationException;
 import com.crosscert.passkey.fido2.Fido2VerificationException.FailureReason;
 import com.crosscert.passkey.fido2.attestation.AppleAnonymousAttestationVerifier;
 import com.crosscert.passkey.fido2.attestation.AttestationResult;
+import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
+import com.crosscert.passkey.fido2.mds.MetadataEntry;
+import com.crosscert.passkey.fido2.mds.StatusReport;
 import com.crosscert.passkey.fido2.model.AttestationObject;
 import com.crosscert.passkey.unit.fido2.CborTestEncoder;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
@@ -23,6 +29,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.DERSequence;
@@ -75,16 +82,13 @@ class AppleAttestationVerifierTest {
     Fixture f = Fixture.valid();
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
     // The fixture cert is self-signed; register itself as the trust anchor for the AAGUID.
-    java.util.UUID aaguid = aaguidOfAttestation(obj);
-    java.security.cert.X509Certificate selfCert = leafOf(obj);
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource source =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
-            java.util.List.of(
-                new com.crosscert.passkey.fido2.mds.MetadataEntry(
-                    aaguid,
-                    java.util.List.of(selfCert),
-                    java.util.List.of(
-                        com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED))));
+    UUID aaguid = aaguidOfAttestation(obj);
+    X509Certificate selfCert = leafOf(obj);
+    MdsTrustAnchorSource source =
+        new MdsTrustAnchorSource(
+            List.of(
+                new MetadataEntry(
+                    aaguid, List.of(selfCert), List.of(StatusReport.FIDO_CERTIFIED))));
     AttestationResult result =
         new AppleAnonymousAttestationVerifier().verify(obj, f.clientDataHash, source);
     assertThat(result.format()).isEqualTo("apple");
@@ -96,20 +100,16 @@ class AppleAttestationVerifierTest {
     Fixture f = Fixture.valid();
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
     // Register an unrelated CA as the trust anchor — PKIX validation must fail.
-    java.security.KeyPairGenerator gen = java.security.KeyPairGenerator.getInstance("EC");
-    gen.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
-    java.security.KeyPair otherPair = gen.generateKeyPair();
-    java.security.cert.X509Certificate unrelatedRoot =
-        Fixture.selfSignedCa(otherPair, "CN=Unrelated Root");
-    java.util.UUID aaguid = aaguidOfAttestation(obj);
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource source =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
-            java.util.List.of(
-                new com.crosscert.passkey.fido2.mds.MetadataEntry(
-                    aaguid,
-                    java.util.List.of(unrelatedRoot),
-                    java.util.List.of(
-                        com.crosscert.passkey.fido2.mds.StatusReport.FIDO_CERTIFIED))));
+    KeyPairGenerator gen = KeyPairGenerator.getInstance("EC");
+    gen.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair otherPair = gen.generateKeyPair();
+    X509Certificate unrelatedRoot = Fixture.selfSignedCa(otherPair, "CN=Unrelated Root");
+    UUID aaguid = aaguidOfAttestation(obj);
+    MdsTrustAnchorSource source =
+        new MdsTrustAnchorSource(
+            List.of(
+                new MetadataEntry(
+                    aaguid, List.of(unrelatedRoot), List.of(StatusReport.FIDO_CERTIFIED))));
     assertThatThrownBy(
             () -> new AppleAnonymousAttestationVerifier().verify(obj, f.clientDataHash, source))
         .isInstanceOf(Fido2VerificationException.class)
@@ -122,8 +122,7 @@ class AppleAttestationVerifierTest {
     Fixture f = Fixture.valid();
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
     // empty source — no entries at all → MDS_TRUST_FAILED
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource empty =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(java.util.List.of());
+    MdsTrustAnchorSource empty = new MdsTrustAnchorSource(List.of());
     assertThatThrownBy(
             () -> new AppleAnonymousAttestationVerifier().verify(obj, f.clientDataHash, empty))
         .isInstanceOf(Fido2VerificationException.class)
@@ -135,15 +134,11 @@ class AppleAttestationVerifierTest {
   void strict_apple_attestation_rejects_revoked_authenticator() throws Exception {
     Fixture f = Fixture.valid();
     AttestationObject obj = AttestationObject.parse(f.attestationObject);
-    java.util.UUID aaguid = aaguidOfAttestation(obj);
-    java.security.cert.X509Certificate selfCert = leafOf(obj);
-    com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource revokedSource =
-        new com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource(
-            java.util.List.of(
-                new com.crosscert.passkey.fido2.mds.MetadataEntry(
-                    aaguid,
-                    java.util.List.of(selfCert),
-                    java.util.List.of(com.crosscert.passkey.fido2.mds.StatusReport.REVOKED))));
+    UUID aaguid = aaguidOfAttestation(obj);
+    X509Certificate selfCert = leafOf(obj);
+    MdsTrustAnchorSource revokedSource =
+        new MdsTrustAnchorSource(
+            List.of(new MetadataEntry(aaguid, List.of(selfCert), List.of(StatusReport.REVOKED))));
     assertThatThrownBy(
             () ->
                 new AppleAnonymousAttestationVerifier()
@@ -155,17 +150,17 @@ class AppleAttestationVerifierTest {
 
   // ----- Test helpers ---------------------------------------------------------------------------
 
-  private static java.util.UUID aaguidOfAttestation(AttestationObject obj) {
+  private static UUID aaguidOfAttestation(AttestationObject obj) {
     byte[] aaguidBytes = obj.authenticatorData().attestedCredentialData().aaguid();
-    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(aaguidBytes);
-    return new java.util.UUID(buf.getLong(), buf.getLong());
+    ByteBuffer buf = ByteBuffer.wrap(aaguidBytes);
+    return new UUID(buf.getLong(), buf.getLong());
   }
 
-  private static java.security.cert.X509Certificate leafOf(AttestationObject obj) throws Exception {
-    byte[] certDer = (byte[]) ((java.util.List<?>) obj.attestationStatement().get("x5c")).get(0);
-    return (java.security.cert.X509Certificate)
-        java.security.cert.CertificateFactory.getInstance("X.509")
-            .generateCertificate(new java.io.ByteArrayInputStream(certDer));
+  private static X509Certificate leafOf(AttestationObject obj) throws Exception {
+    byte[] certDer = (byte[]) ((List<?>) obj.attestationStatement().get("x5c")).get(0);
+    return (X509Certificate)
+        CertificateFactory.getInstance("X.509")
+            .generateCertificate(new ByteArrayInputStream(certDer));
   }
 
   // ----- Fixture builder ---------------------------------------------------------------------
@@ -243,20 +238,7 @@ class AppleAttestationVerifierTest {
      * AppleAttestationVerifierTest#strict_apple_attestation_rejects_untrusted_chain}.
      */
     static X509Certificate selfSignedCa(KeyPair pair, String dn) throws Exception {
-      Instant now = Instant.now();
-      JcaX509v3CertificateBuilder builder =
-          new JcaX509v3CertificateBuilder(
-              new X500Name(dn),
-              BigInteger.valueOf(System.nanoTime()),
-              Date.from(now.minus(1, ChronoUnit.DAYS)),
-              Date.from(now.plus(365, ChronoUnit.DAYS)),
-              new X500Name(dn),
-              pair.getPublic());
-      builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
-      return new JcaX509CertificateConverter()
-          .getCertificate(
-              builder.build(
-                  new JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate())));
+      return AttestationTestCerts.selfSignedCa(pair, dn);
     }
 
     private static X509Certificate buildAttestationCert(KeyPair pair, byte[] nonceBytes)
