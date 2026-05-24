@@ -77,6 +77,7 @@ public class PlatformActivityService {
 
   @Transactional(value = "adminTransactionManager", readOnly = true)
   public ActivitySummary summary(String window) {
+    // TODO(window): currently only 24h is supported; parameter retained for future widening.
     OffsetDateTime since = OffsetDateTime.now(ZoneOffset.UTC).minusHours(24);
     long total = countSince(null, since);
     long adminMutations = countSinceForCategory(AuditCategory.ADMIN_ACTION, since);
@@ -90,8 +91,7 @@ public class PlatformActivityService {
 
   private long countSince(AuditCategory category, OffsetDateTime since) {
     if (category == null) {
-      return adminJdbc.queryForObject(
-          COUNT_TOTAL_SINCE, new MapSqlParameterSource().addValue("since", since), Long.class);
+      return count(COUNT_TOTAL_SINCE, new MapSqlParameterSource().addValue("since", since));
     }
     return countSinceForCategory(category, since);
   }
@@ -106,10 +106,14 @@ public class PlatformActivityService {
     if (typeNames.isEmpty()) {
       return 0L;
     }
-    return adminJdbc.queryForObject(
+    return count(
         COUNT_SINCE_BY_TYPES,
-        new MapSqlParameterSource().addValue("eventTypes", typeNames).addValue("since", since),
-        Long.class);
+        new MapSqlParameterSource().addValue("eventTypes", typeNames).addValue("since", since));
+  }
+
+  private long count(String sql, MapSqlParameterSource params) {
+    Long result = adminJdbc.queryForObject(sql, params, Long.class);
+    return result == null ? 0L : result;
   }
 
   private LatencySnapshot httpLatencySnapshot() {
