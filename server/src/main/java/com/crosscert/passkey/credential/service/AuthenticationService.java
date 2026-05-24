@@ -132,6 +132,19 @@ public class AuthenticationService {
    */
   @Transactional
   public AuthenticationResult finishAuthentication(AuthenticationVerifyRequest req) {
+    return finishAuthentication(req, null, null);
+  }
+
+  /**
+   * Variant that records the originating client's IP and User-Agent on the issued refresh token.
+   * Controllers pass these from {@link jakarta.servlet.http.HttpServletRequest} so the admin
+   * Sessions tab can show "from where" each session was opened. Both args are nullable — RP
+   * integrations that don't surface a request context (e.g. internal jobs) still authenticate
+   * normally, the columns just stay null for those rows.
+   */
+  @Transactional
+  public AuthenticationResult finishAuthentication(
+      AuthenticationVerifyRequest req, String clientIp, String userAgent) {
     TenantWebauthnConfig cfg = configService.requireCurrent();
     enforceCredentialRateLimit(cfg.getTenantId(), req.credentialId());
     ChallengeRecord stored = consumeChallenge(req);
@@ -152,7 +165,9 @@ public class AuthenticationService {
         userRepo
             .findById(credential.getTenantUserId())
             .orElseThrow(() -> new BusinessException(ErrorCode.ENTITY_NOT_FOUND));
-    TokenPair tokens = tokenService.issue(cfg.getTenantId(), user.getId(), user.getExternalId());
+    TokenPair tokens =
+        tokenService.issue(
+            cfg.getTenantId(), user.getId(), user.getExternalId(), clientIp, userAgent);
 
     auditService.appendAfterCommit(
         AuditEventType.CREDENTIAL_AUTHENTICATED,

@@ -6,6 +6,7 @@ import com.crosscert.passkey.credential.api.AuthenticationOptionsResponse;
 import com.crosscert.passkey.credential.api.AuthenticationResult;
 import com.crosscert.passkey.credential.api.AuthenticationVerifyRequest;
 import com.crosscert.passkey.credential.service.AuthenticationService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,7 +31,9 @@ public class AuthenticationController {
 
   @PostMapping("/verify")
   public ApiResponse<AuthenticationResult> verify(
-      @Valid @RequestBody AuthenticationVerifyRequest req) {
-    return ApiResponse.ok(authenticationService.finishAuthentication(req));
+      @Valid @RequestBody AuthenticationVerifyRequest req, HttpServletRequest httpReq) {
+    String ip = httpReq.getRemoteAddr();
+    String ua = httpReq.getHeader("User-Agent");
+    return ApiResponse.ok(authenticationService.finishAuthentication(req, ip, ua));
   }
 }
