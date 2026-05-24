@@ -190,6 +190,7 @@ public final class MetadataBlob {
       }
 
       List<X509Certificate> rootCerts = new ArrayList<>();
+      String description = null;
       JsonNode statement = entryNode.get("metadataStatement");
       if (statement != null) {
         JsonNode roots = statement.get("attestationRootCertificates");
@@ -199,8 +200,12 @@ public final class MetadataBlob {
             rootCerts.add((X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der)));
           }
         }
+        JsonNode desc = statement.get("description");
+        if (desc != null && !desc.isNull()) {
+          description = desc.asText();
+        }
       }
-      return new MetadataEntry(aaguid, rootCerts, statuses);
+      return new MetadataEntry(aaguid, rootCerts, statuses, description);
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
