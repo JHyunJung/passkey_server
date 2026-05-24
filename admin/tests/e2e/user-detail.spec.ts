@@ -36,7 +36,6 @@ test.describe("Admin · 사용자 상세 페이지", () => {
     await firstUserRow.click();
 
     // Verify default tab is Credentials
-    const credentialsTab = page.locator('[role="tab"]:has-text("Credentials")');
     const activeTab = page.locator('[role="tab"][aria-selected="true"]');
     await expect(activeTab).toContainText("Credentials");
 
