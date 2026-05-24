@@ -34,8 +34,8 @@ test.describe("Platform Activity page", () => {
     await expect(page.getByText("운영 액션 (24H)")).toBeVisible();
     await expect(page.getByText("보안 이벤트 (24H)")).toBeVisible();
     await expect(page.getByText("평균 응답")).toBeVisible();
-    // Filter tabs
-    await expect(page.getByRole("button", { name: "전체" })).toBeVisible();
+    // Filter tabs — exact match avoids collision with the "전체 tenant" chip below.
+    await expect(page.getByRole("button", { name: "전체", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "운영 액션" })).toBeVisible();
     await expect(page.getByRole("button", { name: "보안 실패" })).toBeVisible();
   });
