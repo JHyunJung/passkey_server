@@ -150,4 +150,19 @@ public class AdminCredentialController {
     lifecycle.revoke(credentialId, reason == null ? CredentialRevokedReason.ADMIN_FORCED : reason);
     return ApiResponse.ok();
   }
+
+  @PostMapping("/{credentialId}/unsuspend")
+  @ResponseStatus(HttpStatus.OK)
+  @Operation(
+      summary = "Unsuspend a credential (PLATFORM_OPERATOR only)",
+      description =
+          "Restores SUSPENDED → ACTIVE. Preserves suspendedAt/Reason for forensics."
+              + " Refresh tokens are not auto-reissued — user must re-authenticate.")
+  public ApiResponse<CredentialView> unsuspend(
+      @PathVariable UUID tenantId, @PathVariable UUID credentialId) {
+    AdminAuthz.requirePlatformOperator();
+    AdminAuthz.requireTenantAccess(tenantId);
+    return ApiResponse.ok(
+        lifecycle.unsuspend(credentialId, AdminAuthz.currentPrincipal().adminId().toString()));
+  }
 }

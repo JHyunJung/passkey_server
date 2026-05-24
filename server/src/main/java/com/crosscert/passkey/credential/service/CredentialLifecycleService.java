@@ -320,6 +320,34 @@ public class CredentialLifecycleService {
     doRevoke(c, reason);
   }
 
+  /**
+   * Platform Operator manual unsuspend. Restores ACTIVE; preserves suspendedAt/Reason for
+   * forensics; sets unsuspendedAt/By. No refresh token re-issue — user must complete a fresh
+   * assertion to receive a new session.
+   */
+  @Transactional
+  public CredentialView unsuspend(UUID credentialId, String actorId) {
+    Credential c =
+        credentialRepo
+            .findById(credentialId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
+    String previousReason = c.getSuspendedReason() == null ? "" : c.getSuspendedReason();
+    c.unsuspend(actorId); // throws CREDENTIAL_INVALID_STATE on wrong state
+    auditService.append(
+        AuditEventType.CREDENTIAL_UNSUSPENDED,
+        ActorType.ADMIN,
+        actorId,
+        "CREDENTIAL",
+        c.getId().toString(),
+        Map.of("previousReason", previousReason));
+    log.info(
+        "credential.unsuspend tenantId={} credentialDbId={} actor={}",
+        c.getTenantId(),
+        c.getId(),
+        actorId);
+    return CredentialView.from(c);
+  }
+
   private Credential lookupOwnedBy(UUID credentialId, String externalUserId) {
     Credential c =
         credentialRepo

@@ -16,7 +16,11 @@ public record CredentialView(
     OffsetDateTime lastUsedAt,
     OffsetDateTime createdAt,
     OffsetDateTime revokedAt,
-    String revokedReason) {
+    String revokedReason,
+    OffsetDateTime suspendedAt,
+    String suspendedReason,
+    OffsetDateTime unsuspendedAt,
+    String unsuspendedBy) {
 
   public static CredentialView from(Credential c) {
     return new CredentialView(
@@ -31,6 +35,10 @@ public record CredentialView(
         c.getLastUsedAt(),
         c.getCreatedAt(),
         c.getRevokedAt(),
-        c.getRevokedReason() == null ? null : c.getRevokedReason().name());
+        c.getRevokedReason() == null ? null : c.getRevokedReason().name(),
+        c.getSuspendedAt(),
+        c.getSuspendedReason(),
+        c.getUnsuspendedAt(),
+        c.getUnsuspendedBy());
   }
 }

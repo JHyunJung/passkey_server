@@ -17,6 +17,7 @@ import com.crosscert.passkey.credential.challenge.ChallengeRecord;
 import com.crosscert.passkey.credential.challenge.ChallengeStore;
 import com.crosscert.passkey.credential.challenge.WebauthnCeremonyProperties;
 import com.crosscert.passkey.credential.domain.Credential;
+import com.crosscert.passkey.credential.domain.CredentialStatus;
 import com.crosscert.passkey.credential.domain.TenantWebauthnConfig;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.credential.webauthn.Base64UrlCodec;
@@ -277,7 +278,21 @@ public class AuthenticationService {
         credentialRepo
             .findByCredentialIdAndTenantId(req.credentialId(), tenantId)
             .orElseThrow(() -> new BusinessException(ErrorCode.CREDENTIAL_NOT_FOUND));
-    if (!credential.isActive()) {
+    // Explicit per-status branching so SUSPENDED is not misclassified as REVOKED. Cheaper than
+    // running the signature verification first — block before any crypto work, audit, or metric
+    // attribution that depends on the assertion result.
+    if (credential.getStatus() == CredentialStatus.SUSPENDED) {
+      log.warn(
+          "auth.credential.rejected.suspended tenantId={} tenantUserId={} credentialDbId={}",
+          credential.getTenantId(),
+          credential.getTenantUserId(),
+          credential.getId());
+      metrics.getAuthenticationFailure().increment();
+      throw new BusinessException(ErrorCode.CREDENTIAL_SUSPENDED);
+    }
+    if (credential.getStatus() != CredentialStatus.ACTIVE) {
+      // REVOKED (the only remaining non-ACTIVE state today) keeps the historical CREDENTIAL_REVOKED
+      // error code so existing clients see no behaviour change.
       throw new BusinessException(ErrorCode.CREDENTIAL_REVOKED);
     }
     return credential;
