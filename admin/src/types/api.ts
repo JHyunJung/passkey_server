@@ -188,15 +188,56 @@ export interface EndUserView {
   updatedAt: string;
 }
 
+export interface CredentialCounts {
+  active: number;
+  suspended: number;
+  revoked: number;
+}
+
+export interface SessionCounts {
+  active: number;
+}
+
 export interface EndUserDetailView {
   id: string;
   externalId: string;
   displayName: string | null;
   createdAt: string;
   updatedAt: string;
-  activeCredentialCount: number;
+  credentials: CredentialCounts; // CHANGED: was CredentialView[]
+  sessions: SessionCounts; // NEW
   lastActivityAt: string | null;
-  credentials: CredentialView[];
+}
+
+export interface AaguidLabelDto {
+  aaguid: string | null;
+  displayName: string;
+  fromMds: boolean;
+}
+
+export interface UserCredentialItemView {
+  id: string;
+  credentialIdShort: string | null;
+  aaguid: AaguidLabelDto;
+  status: "ACTIVE" | "SUSPENDED" | "REVOKED";
+  suspendedReason: string | null;
+  nickname: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface RefreshTokenView {
+  id: string;
+  issuedAt: string;
+  expiresAt: string;
+  clientIp: string | null;
+  userAgent: string | null;
+  revokedAt: string | null;
+  revokedReason: string | null;
+}
+
+export interface RevokeRefreshTokenResult {
+  alreadyRevoked: boolean;
 }
 
 // ─── Audit ────────────────────────────────────────────────────────────────────
