@@ -18,7 +18,23 @@
 
 ## 빠르게 시작
 
-### 로컬 개발
+### 원샷 (권장)
+
+```bash
+scripts/dev-up.sh -y          # DB 리셋 + 서버 3종 부팅 + tenant/API key 자동 발급
+# … 끝나면 .env.dev에 PASSKEY_TENANT_ID/PASSKEY_API_KEY가 떨어져 있음
+scripts/dev-down.sh           # 서버만 종료 (Oracle/Redis 유지)
+scripts/dev-down.sh --infra   # 컨테이너까지 종료
+```
+
+스크립트가 띄우는 것:
+- **Passkey 서버** `:8080` (admin REST API + RP API + swagger)
+- **RP demo** `:8090` (passkey-rp-spring-boot-starter 예제)
+- **Admin 콘솔** `:5173` (Vite dev) — 로그인 `dev@local.test` / `devpassword!`
+
+로그는 `logs/*.log`. 매 실행마다 직전 로그는 `logs/archive/<timestamp>/`로 보존.
+
+### 수동 부팅 (개별 컴포넌트만 띄우고 싶을 때)
 
 ```bash
 cd server
