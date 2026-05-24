@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 
 class AaguidLabelResolverTest {
 
@@ -57,13 +58,27 @@ class AaguidLabelResolverTest {
   }
 
   @Test
+  void resolve_providerAbsent_returnsUuidStringAndFromMdsFalse() {
+    // Mirrors the deployment shape passkey.mds.enabled=false: no MdsBlobProvider bean.
+    UUID aaguid = UUID.randomUUID();
+    @SuppressWarnings("unchecked")
+    ObjectProvider<MdsBlobProvider> empty = mock(ObjectProvider.class);
+    when(empty.getIfAvailable()).thenReturn(null);
+    AaguidLabelResolver resolver = new AaguidLabelResolver(empty);
+    AaguidLabel label = resolver.resolve(aaguid);
+    assertThat(label.aaguid()).isEqualTo(aaguid);
+    assertThat(label.displayName()).isEqualTo(aaguid.toString());
+    assertThat(label.fromMds()).isFalse();
+  }
+
+  @Test
   void onBlobRefresh_rebuildsCache() {
     UUID a = UUID.randomUUID();
     UUID b = UUID.randomUUID();
     MdsBlobProvider provider = mock(MdsBlobProvider.class);
     AtomicReference<MetadataBlob> ref = new AtomicReference<>(blobOf(List.of(entry(a, "A"))));
     when(provider.getLastBlob()).thenReturn(ref);
-    AaguidLabelResolver resolver = new AaguidLabelResolver(provider);
+    AaguidLabelResolver resolver = new AaguidLabelResolver(providerOf(provider));
     // warm the cache to the first blob
     assertThat(resolver.resolve(a).displayName()).isEqualTo("A");
     assertThat(resolver.resolve(b).fromMds()).isFalse();
@@ -79,7 +94,7 @@ class AaguidLabelResolverTest {
   private static AaguidLabelResolver newResolverWithBlob(MetadataBlob blob) {
     MdsBlobProvider provider = mock(MdsBlobProvider.class);
     when(provider.getLastBlob()).thenReturn(new AtomicReference<>(blob));
-    return new AaguidLabelResolver(provider);
+    return new AaguidLabelResolver(providerOf(provider));
   }
 
   private static AaguidLabelResolver newResolverWithEntries(List<MetadataEntry> entries) {
@@ -97,5 +112,13 @@ class AaguidLabelResolverTest {
     MetadataBlob blob = mock(MetadataBlob.class);
     when(blob.entries()).thenReturn(entries);
     return blob;
+  }
+
+  /** Wraps an MdsBlobProvider mock in an ObjectProvider that always returns it. */
+  @SuppressWarnings("unchecked")
+  private static ObjectProvider<MdsBlobProvider> providerOf(MdsBlobProvider provider) {
+    ObjectProvider<MdsBlobProvider> objectProvider = mock(ObjectProvider.class);
+    when(objectProvider.getIfAvailable()).thenReturn(provider);
+    return objectProvider;
   }
 }

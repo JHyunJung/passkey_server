@@ -7,30 +7,37 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 /**
  * Resolves an AAGUID to a human-readable label by looking it up in the currently-cached MDS BLOB.
- * Falls back to the raw UUID string when (a) the BLOB hasn't loaded yet, or (b) the AAGUID isn't
+ * Falls back to the raw UUID string when (a) the BLOB hasn't loaded yet, (b) the AAGUID isn't
  * registered in MDS (common for platform authenticators — iCloud Keychain, Windows Hello, Google
- * Password Manager are not in the FIDO MDS).
+ * Password Manager are not in the FIDO MDS), or (c) MDS is disabled at this deployment ({@code
+ * passkey.mds.enabled=false}, no {@link MdsBlobProvider} bean is created).
  *
  * <p>Caches the AAGUID→entry map to avoid an O(N) scan of {@code blob.entries()} per call. Cache is
  * rebuilt on {@link MdsBlobRefreshedEvent} — which fires from {@link MdsBlobProvider#refresh()} and
  * is guaranteed to land after listener registration (warm-up runs on {@code
  * ApplicationReadyEvent}).
+ *
+ * <p>Wraps the provider in an {@link ObjectProvider} so this resolver itself stays unconditional —
+ * other beans (e.g. the admin user-detail controller) can depend on it without forcing MDS on. When
+ * the provider is absent, every {@link #resolve} call gracefully falls back to the raw UUID string.
+ * Mirrors the same pattern used by {@code MdsDiagController} and {@code AdminSystemController}.
  */
 @Slf4j
 @Service
 public class AaguidLabelResolver {
 
-  private final MdsBlobProvider provider;
+  private final ObjectProvider<MdsBlobProvider> providerProvider;
   private volatile Map<UUID, MetadataEntry> cache;
   private volatile MetadataBlob cachedFor;
 
-  public AaguidLabelResolver(MdsBlobProvider provider) {
-    this.provider = provider;
+  public AaguidLabelResolver(ObjectProvider<MdsBlobProvider> providerProvider) {
+    this.providerProvider = providerProvider;
   }
 
   public AaguidLabel resolve(UUID aaguid) {
@@ -53,6 +60,11 @@ public class AaguidLabelResolver {
   }
 
   private MetadataEntry lookup(UUID aaguid) {
+    MdsBlobProvider provider = providerProvider.getIfAvailable();
+    if (provider == null) {
+      // MDS disabled at this deployment — no blob, no entries. Fall back to raw UUID.
+      return null;
+    }
     MetadataBlob current = provider.getLastBlob().get();
     if (current == null) {
       return null;
