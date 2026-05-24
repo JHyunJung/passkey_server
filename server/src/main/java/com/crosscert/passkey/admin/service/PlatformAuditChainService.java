@@ -81,8 +81,10 @@ public class PlatformAuditChainService {
 
   // ---- SQL ----
 
+  // SUSPENDED/DELETED tenant는 dashboard 대상에서 제외 — service Javadoc과 UI empty-state 카피가
+  // "ACTIVE tenant"라고 명시하고 있다.
   private static final String LIST_TENANTS_SQL =
-      "SELECT id, slug, name FROM tenant ORDER BY name ASC";
+      "SELECT id, slug, name FROM tenant WHERE status = 'ACTIVE' ORDER BY name ASC";
 
   // ---- dependencies ----
 
@@ -221,12 +223,19 @@ public class PlatformAuditChainService {
   }
 
   /**
-   * {@link AuditService#verifyIntegrity}는 VPD-bound이므로 호출 전 tenant context를 set한다. context는 호출 종료 후
-   * 무조건 clear (try/finally).
+   * Platform monitor는 tenant의 전체 chain 무결성을 묻는다 — "지난 30일만"이 아니다. 시간 윈도가 chain 일부만 잘라 보면 윈도 첫 row의
+   * {@code prev_hash}가 윈도 이전 row를 가리키므로 {@code verifyIntegrity}가 {@code prev=""}로 replay 시작해서 정상
+   * long-lived tenant를 TAMPERED로 잘못 표시한다.
+   *
+   * <p>{@code from = EPOCH}로 두면 모든 row가 윈도 안에 들어와 replay가 chain 시작부터 진행된다. audit_log는 1970년 이전 row가
+   * 있을 수 없으므로 안전한 sentinel.
+   *
+   * <p>{@link AuditService#verifyIntegrity}는 VPD-bound이므로 호출 전 tenant context를 set한다. context는 호출
+   * 종료 후 무조건 clear (try/finally).
    */
   private ChainVerification verifyTenantWithContext(UUID tenantId) {
     OffsetDateTime to = OffsetDateTime.now(ZoneOffset.UTC);
-    OffsetDateTime from = to.minusDays(30); // 30일 윈도 — UI 모니터링용. scheduler는 daily 24h 범위.
+    OffsetDateTime from = OffsetDateTime.of(1970, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC);
     TenantContextHolder.set(new TenantContext(tenantId, "platform-audit-chain:" + tenantId));
     try {
       return auditService.verifyIntegrity(tenantId, from, to);

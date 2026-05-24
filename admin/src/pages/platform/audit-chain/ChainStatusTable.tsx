@@ -21,18 +21,7 @@ export function ChainStatusTable({ rows }: { rows: TenantChainRow[] }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { toast } = useToast();
-  const intactCount = rows.filter((r) => r.status === "INTACT").length;
-  const tamperedCount = rows.length - intactCount;
-
-  if (rows.length === 0) {
-    return (
-      <EmptyState
-        title="검증할 tenant가 없습니다."
-        description="ACTIVE tenant가 생성되면 여기에서 chain 상태를 볼 수 있습니다."
-      />
-    );
-  }
-
+  // All hooks must run unconditionally before any early return — React's Rules of Hooks.
   const verifyOne = useMutation({
     mutationFn: (tenantId: string) =>
       apiGet<unknown>(`/api/v1/admin/tenants/${tenantId}/audit-logs/verify`),
@@ -48,6 +37,18 @@ export function ChainStatusTable({ rows }: { rows: TenantChainRow[] }) {
       });
     },
   });
+
+  const intactCount = rows.filter((r) => r.status === "INTACT").length;
+  const tamperedCount = rows.length - intactCount;
+
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="검증할 tenant가 없습니다."
+        description="ACTIVE tenant가 생성되면 여기에서 chain 상태를 볼 수 있습니다."
+      />
+    );
+  }
 
   return (
     <div
