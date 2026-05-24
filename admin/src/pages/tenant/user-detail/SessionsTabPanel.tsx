@@ -144,6 +144,10 @@ export function SessionsTabPanel({ tenantId, tenantUserId }: Props) {
             <TableBody>
               {rows.map((t) => {
                 const revoked = t.revokedAt !== null;
+                // "all" 모드는 expired-but-not-revoked 토큰도 노출한다. 이런 행을 ACTIVE로
+                // 표시하거나 revoke 가능하게 두면 forensic 상태가 ADMIN_FORCED로 오염되므로,
+                // 만료 시점을 클라이언트에서 별도 판정해 EXPIRED 배지 + 액션 비활성화한다.
+                const expired = !revoked && new Date(t.expiresAt).getTime() <= Date.now();
                 return (
                   <TableRow key={t.id}>
                     <TableCell>{formatDateTime(t.issuedAt)}</TableCell>
@@ -155,12 +159,14 @@ export function SessionsTabPanel({ tenantId, tenantUserId }: Props) {
                     <TableCell>
                       {revoked ? (
                         <Badge variant="outline">{t.revokedReason ?? "REVOKED"}</Badge>
+                      ) : expired ? (
+                        <Badge variant="outline">EXPIRED</Badge>
                       ) : (
                         <Badge variant="success">ACTIVE</Badge>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      {!revoked && (
+                      {!revoked && !expired && (
                         <Button
                           size="sm"
                           variant="outline"
