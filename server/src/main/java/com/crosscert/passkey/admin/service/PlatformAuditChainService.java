@@ -90,6 +90,9 @@ public class PlatformAuditChainService {
   private final AuditService auditService;
   private final MeterRegistry meterRegistry;
 
+  @org.springframework.beans.factory.annotation.Value("${passkey.audit.verify-cron:0 30 3 * * *}")
+  private String schedulerCron;
+
   /** {@code tenantId → last verify result + timestamp}. TTL 60s. */
   private final Cache<UUID, CachedVerify> verifyCache =
       Caffeine.newBuilder().expireAfterWrite(Duration.ofSeconds(60)).maximumSize(10_000).build();
@@ -148,7 +151,7 @@ public class PlatformAuditChainService {
         intact,
         tampered,
         totalVerified,
-        "0 30 3 * * *",
+        schedulerCron,
         nextDaily0330Utc(OffsetDateTime.now(ZoneOffset.UTC)),
         60,
         lat.avgMs(),
@@ -258,8 +261,13 @@ public class PlatformAuditChainService {
   }
 
   /**
-   * 오늘의 03:30 UTC가 아직 지나지 않았으면 오늘 03:30을, 이미 지났으면 내일 03:30을 반환한다. 정각 03:30:00.000은 "지나지 않은" 것으로 처리
-   * (isBefore → strictly before).
+   * Returns the next 03:30 UTC after {@code now}. Heuristic: assumes the default cron schedule of
+   * {@code 0 30 3 * * *}. If {@code passkey.audit.verify-cron} is overridden, this estimate is
+   * wrong — a future change should parse the actual cron expression. The {@code schedulerCron}
+   * field already exposes the real cron string so operators see the truth.
+   *
+   * <p>오늘의 03:30 UTC가 아직 지나지 않았으면 오늘 03:30을, 이미 지났으면 내일 03:30을 반환한다. 정각 03:30:00.000은 "지나지 않은" 것으로
+   * 처리 (isBefore → strictly before).
    */
   private static OffsetDateTime nextDaily0330Utc(OffsetDateTime now) {
     OffsetDateTime today330 = now.withHour(3).withMinute(30).withSecond(0).withNano(0);

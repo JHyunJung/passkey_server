@@ -2,6 +2,8 @@ package com.crosscert.passkey.admin.service;
 
 import com.crosscert.passkey.audit.domain.AuditCategory;
 import com.crosscert.passkey.audit.domain.AuditEventType;
+import com.crosscert.passkey.common.exception.BusinessException;
+import com.crosscert.passkey.common.exception.ErrorCode;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.distribution.HistogramSnapshot;
@@ -300,14 +302,22 @@ public class PlatformActivityService {
   }
 
   private static Cursor decodeCursor(String cursor) {
-    String raw =
-        new String(
-            java.util.Base64.getUrlDecoder().decode(cursor),
-            java.nio.charset.StandardCharsets.UTF_8);
-    int sep = raw.indexOf('|');
-    if (sep < 0) throw new IllegalArgumentException("invalid cursor");
-    return new Cursor(
-        OffsetDateTime.parse(raw.substring(0, sep)), UUID.fromString(raw.substring(sep + 1)));
+    try {
+      String raw =
+          new String(
+              java.util.Base64.getUrlDecoder().decode(cursor),
+              java.nio.charset.StandardCharsets.UTF_8);
+      int sep = raw.indexOf('|');
+      if (sep < 0) {
+        throw new BusinessException(ErrorCode.INVALID_INPUT, "invalid cursor");
+      }
+      return new Cursor(
+          OffsetDateTime.parse(raw.substring(0, sep)), UUID.fromString(raw.substring(sep + 1)));
+    } catch (BusinessException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      throw new BusinessException(ErrorCode.INVALID_INPUT, "invalid cursor");
+    }
   }
 
   private static String uuidToHex(UUID u) {

@@ -171,6 +171,7 @@ public class AuditService {
         Timer.builder("audit.chain.verify")
             .description("Hash chain re-verification duration per tenant")
             .tag("tenantId", tenantId.toString())
+            .publishPercentiles(0.99)
             .register(meterRegistry);
     long startNanos = System.nanoTime();
     try {
