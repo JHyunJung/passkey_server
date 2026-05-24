@@ -16,14 +16,25 @@ function escapeCsvCell(value: unknown): string {
   return str;
 }
 
-/** Turn an array of plain objects into a CSV string with the given column order. */
-export function rowsToCsv<T extends Record<string, unknown>>(
+/**
+ * Turn an array of plain objects into a CSV string with the given column order.
+ *
+ * <p>The generic {@code T} intentionally omits an index signature — typed DTOs
+ * from {@code types/api.ts} are interfaces without index signatures, and forcing
+ * one would leak through the entire type graph. We cast row access internally
+ * because columns are validated at compile time via {@code keyof T}.
+ */
+export function rowsToCsv<T>(
   rows: T[],
   columns: { key: keyof T; header: string }[],
 ): string {
   const header = columns.map((c) => escapeCsvCell(c.header)).join(",");
   const body = rows
-    .map((row) => columns.map((c) => escapeCsvCell(row[c.key])).join(","))
+    .map((row) =>
+      columns
+        .map((c) => escapeCsvCell((row as Record<string, unknown>)[c.key as string]))
+        .join(","),
+    )
     .join("\n");
   return `${header}\n${body}\n`;
 }
