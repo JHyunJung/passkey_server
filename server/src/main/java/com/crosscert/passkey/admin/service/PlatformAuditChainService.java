@@ -120,20 +120,24 @@ public class PlatformAuditChainService {
     long totalVerified = 0;
 
     for (TenantRow t : tenants) {
-      ChainVerification ver = cachedOrVerify(t.id());
-      CachedVerify cached = verifyCache.getIfPresent(t.id());
-      OffsetDateTime verifiedAt =
-          cached != null ? cached.verifiedAt() : OffsetDateTime.now(ZoneOffset.UTC);
+      CachedVerify cv = cachedOrVerify(t.id());
+      ChainVerification ver = cv.verification();
       int tamperCount = ver.tamperedEntryIds().size();
       String statusStr = ver.intact() ? "INTACT" : "TAMPERED";
       perTenant.add(
           new TenantChainRow(
-              t.id(), t.slug(), t.name(), statusStr, ver.verifiedRows(), verifiedAt, tamperCount));
+              t.id(),
+              t.slug(),
+              t.name(),
+              statusStr,
+              ver.verifiedRows(),
+              cv.verifiedAt(),
+              tamperCount));
       if (ver.intact()) {
         intact++;
       } else {
         tampered.add(
-            new TamperedTenantSummary(t.id(), t.slug(), t.name(), tamperCount, verifiedAt));
+            new TamperedTenantSummary(t.id(), t.slug(), t.name(), tamperCount, cv.verifiedAt()));
       }
       totalVerified += ver.verifiedRows();
     }
@@ -204,11 +208,12 @@ public class PlatformAuditChainService {
   }
 
   /** 캐시에 유효한 결과가 있으면 반환, 없으면 즉시 재검증 후 캐시에 저장. */
-  private ChainVerification cachedOrVerify(UUID tenantId) {
+  private CachedVerify cachedOrVerify(UUID tenantId) {
     CachedVerify cached = verifyCache.getIfPresent(tenantId);
-    if (cached != null) return cached.verification();
-    ChainVerification fresh = verifyTenantWithContext(tenantId);
-    verifyCache.put(tenantId, new CachedVerify(fresh, OffsetDateTime.now(ZoneOffset.UTC)));
+    if (cached != null) return cached;
+    CachedVerify fresh =
+        new CachedVerify(verifyTenantWithContext(tenantId), OffsetDateTime.now(ZoneOffset.UTC));
+    verifyCache.put(tenantId, fresh);
     return fresh;
   }
 
@@ -218,7 +223,7 @@ public class PlatformAuditChainService {
    */
   private ChainVerification verifyTenantWithContext(UUID tenantId) {
     OffsetDateTime to = OffsetDateTime.now(ZoneOffset.UTC);
-    OffsetDateTime from = to.minusDays(30); // 30일 윈도 — scheduler와 동등 범위
+    OffsetDateTime from = to.minusDays(30); // 30일 윈도 — UI 모니터링용. scheduler는 daily 24h 범위.
     TenantContextHolder.set(new TenantContext(tenantId, "platform-audit-chain:" + tenantId));
     try {
       return auditService.verifyIntegrity(tenantId, from, to);
