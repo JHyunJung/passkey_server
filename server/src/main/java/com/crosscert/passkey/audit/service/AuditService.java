@@ -10,6 +10,8 @@ import com.crosscert.passkey.tenant.context.TenantContext;
 import com.crosscert.passkey.tenant.context.TenantContextHolder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import java.nio.charset.StandardCharsets;
@@ -47,6 +49,7 @@ public class AuditService {
 
   private final AuditEntryRepository repo;
   private final ObjectMapper objectMapper;
+  private final MeterRegistry meterRegistry;
 
   /**
    * Off-thread writer for {@link #appendAfterCommit}. {@code @Lazy} breaks the AuditService ↔
@@ -61,10 +64,12 @@ public class AuditService {
   public AuditService(
       AuditEntryRepository repo,
       ObjectMapper objectMapper,
-      @org.springframework.context.annotation.Lazy AsyncAuditWriter asyncAuditWriter) {
+      @org.springframework.context.annotation.Lazy AsyncAuditWriter asyncAuditWriter,
+      MeterRegistry meterRegistry) {
     this.repo = repo;
     this.objectMapper = objectMapper;
     this.asyncAuditWriter = asyncAuditWriter;
+    this.meterRegistry = meterRegistry;
   }
 
   @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -162,23 +167,33 @@ public class AuditService {
    */
   @Transactional(readOnly = true)
   public ChainVerification verifyIntegrity(UUID tenantId, OffsetDateTime from, OffsetDateTime to) {
-    String prev = "";
-    long ok = 0;
-    List<UUID> tampered = new ArrayList<>();
-    try (Stream<AuditEntry> stream = repo.streamForTenantByTime(tenantId, from, to)) {
-      for (AuditEntry e : (Iterable<AuditEntry>) stream::iterator) {
-        String expected = computeRowHash(prev, tenantId, e.getEventType(), e.getPayload());
-        String storedPrev = e.getPrevHash() == null ? "" : e.getPrevHash();
-        boolean rowOk = expected.equals(e.getRowHash()) && Objects.equals(storedPrev, prev);
-        if (rowOk) {
-          ok++;
-        } else {
-          tampered.add(e.getId());
+    Timer timer =
+        Timer.builder("audit.chain.verify")
+            .description("Hash chain re-verification duration per tenant")
+            .tag("tenantId", tenantId.toString())
+            .register(meterRegistry);
+    long startNanos = System.nanoTime();
+    try {
+      String prev = "";
+      long ok = 0;
+      List<UUID> tampered = new ArrayList<>();
+      try (Stream<AuditEntry> stream = repo.streamForTenantByTime(tenantId, from, to)) {
+        for (AuditEntry e : (Iterable<AuditEntry>) stream::iterator) {
+          String expected = computeRowHash(prev, tenantId, e.getEventType(), e.getPayload());
+          String storedPrev = e.getPrevHash() == null ? "" : e.getPrevHash();
+          boolean rowOk = expected.equals(e.getRowHash()) && Objects.equals(storedPrev, prev);
+          if (rowOk) {
+            ok++;
+          } else {
+            tampered.add(e.getId());
+          }
+          prev = e.getRowHash();
         }
-        prev = e.getRowHash();
       }
+      return new ChainVerification(tenantId, from, to, ok, tampered);
+    } finally {
+      timer.record(System.nanoTime() - startNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
     }
-    return new ChainVerification(tenantId, from, to, ok, tampered);
   }
 
   /** Result of {@link #verifyIntegrity(UUID, OffsetDateTime, OffsetDateTime)}. */

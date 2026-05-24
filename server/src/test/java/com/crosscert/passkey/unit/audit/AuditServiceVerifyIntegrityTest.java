@@ -11,6 +11,7 @@ import com.crosscert.passkey.audit.repository.AuditEntryRepository;
 import com.crosscert.passkey.audit.service.AuditService;
 import com.crosscert.passkey.audit.service.AuditService.ChainVerification;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -41,7 +42,7 @@ class AuditServiceVerifyIntegrityTest {
   void setUp() {
     // verifyIntegrity exercises only the hash-chain replay — the async writer is never reached,
     // so a null dependency is sufficient here.
-    service = new AuditService(repo, new ObjectMapper(), null);
+    service = new AuditService(repo, new ObjectMapper(), null, new SimpleMeterRegistry());
   }
 
   @Test
