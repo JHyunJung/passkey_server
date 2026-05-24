@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
+import { useAuditChainStatus } from "@/hooks/usePlatformAuditChain";
 import { apiGet } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { Me, TenantView } from "@/types/api";
@@ -29,18 +30,10 @@ interface NavItem {
 }
 
 // Platform-scope nav (flat, mirrors the handoff design).
-// Activity / Audit Chain / Settings don't have operational pages yet, so they
-// route to the /console mock so visual + flow stay end-to-end clickable.
 const NAV_PLATFORM: NavItem[] = [
   { to: "/tenants", label: "Tenants", icon: Building2 },
-  { to: "/console#me=platform&name=activity", label: "Activity", icon: Activity, external: true, mock: true },
-  {
-    to: "/console#me=platform&name=audit-chain",
-    label: "Audit Chain",
-    icon: Hash,
-    external: true,
-    mock: true,
-  },
+  { to: "/platform/activity", label: "Activity", icon: Activity },
+  { to: "/platform/audit-chain", label: "Audit Chain", icon: Hash },
   { to: "/admins", label: "설정", icon: Cog },
 ];
 
@@ -68,6 +61,11 @@ export function Sidebar({ me }: { me: Me }) {
     queryFn: () => apiGet<TenantView>(`/api/v1/admin/tenants/${activeTenantId}`),
     enabled: !!activeTenantId,
   });
+
+  // Live audit chain status — drives the footer pill. PLATFORM_OPERATOR only; RP_ADMIN
+  // users get a static fallback to avoid noisy 403s. Shares the cache key with
+  // AuditChainMonitorPage so the data fetch happens at most once per minute.
+  const { data: chainStatus } = useAuditChainStatus({ enabled: isPlatform });
 
   return (
     <aside
@@ -128,28 +126,81 @@ export function Sidebar({ me }: { me: Me }) {
         )}
       </nav>
 
-      {/* Footer · Audit chain status pill */}
+      {/* Footer · Audit chain status pill (live for PLATFORM, static for RP_ADMIN) */}
       <div className="border-t border-border px-3 py-3">
-        <div
-          className="space-y-1 rounded-md border px-2.5 py-2"
-          style={{
-            background: "var(--success-soft)",
-            borderColor: "color-mix(in oklab, var(--success) 20%, transparent)",
-          }}
-        >
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold"
-            style={{ color: "var(--success)" }}>
-            <span
-              className="h-1.5 w-1.5 rounded-full"
-              style={{
-                background: "var(--success)",
-                boxShadow: "0 0 0 3px color-mix(in oklab, var(--success) 25%, transparent)",
-              }}
-            />
-            AUDIT CHAIN OK
+        {isPlatform ? (
+          (() => {
+            const intact =
+              !!chainStatus &&
+              chainStatus.intactTenants === chainStatus.totalTenants;
+            const color = chainStatus
+              ? intact
+                ? "var(--success)"
+                : "var(--danger)"
+              : "var(--text-mute)";
+            const bg = chainStatus
+              ? intact
+                ? "var(--success-soft)"
+                : "var(--danger-soft)"
+              : "var(--surface-3)";
+            const label = chainStatus
+              ? intact
+                ? "AUDIT CHAIN OK"
+                : "AUDIT CHAIN ALERT"
+              : "AUDIT CHAIN …";
+            const sub = chainStatus
+              ? `${chainStatus.totalVerifiedRows.toLocaleString("ko-KR")}행 · ${chainStatus.schedulerCron}`
+              : "상태 조회 중";
+            return (
+              <div
+                className="space-y-1 rounded-md border px-2.5 py-2"
+                style={{
+                  background: bg,
+                  borderColor: `color-mix(in oklab, ${color} 20%, transparent)`,
+                }}
+              >
+                <div
+                  className="flex items-center gap-1.5 text-[11px] font-semibold"
+                  style={{ color }}
+                >
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{
+                      background: color,
+                      boxShadow: `0 0 0 3px color-mix(in oklab, ${color} 25%, transparent)`,
+                    }}
+                  />
+                  {label}
+                </div>
+                <div className="text-[11px] text-text-mute">{sub}</div>
+              </div>
+            );
+          })()
+        ) : (
+          <div
+            className="space-y-1 rounded-md border px-2.5 py-2"
+            style={{
+              background: "var(--success-soft)",
+              borderColor: "color-mix(in oklab, var(--success) 20%, transparent)",
+            }}
+          >
+            <div
+              className="flex items-center gap-1.5 text-[11px] font-semibold"
+              style={{ color: "var(--success)" }}
+            >
+              <span
+                className="h-1.5 w-1.5 rounded-full"
+                style={{
+                  background: "var(--success)",
+                  boxShadow:
+                    "0 0 0 3px color-mix(in oklab, var(--success) 25%, transparent)",
+                }}
+              />
+              AUDIT CHAIN OK
+            </div>
+            <div className="text-[11px] text-text-mute">로컬 검증 · 활성</div>
           </div>
-          <div className="text-[11px] text-text-mute">로컬 검증 · 활성</div>
-        </div>
+        )}
       </div>
     </aside>
   );

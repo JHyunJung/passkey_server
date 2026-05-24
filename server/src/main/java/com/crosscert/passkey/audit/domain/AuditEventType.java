@@ -5,49 +5,64 @@ package com.crosscert.passkey.audit.domain;
  * chips, retention policies, downstream SIEM mappings) can categorize without string matching.
  * Order within each section is stable — append new entries at the end of their group, never
  * renumber.
+ *
+ * <p>Each value carries an {@link AuditCategory} for the cross-tenant Activity feed filter; that
+ * mapping is the single source of truth used both by server aggregations and serialized response
+ * payloads.
  */
 public enum AuditEventType {
 
   // ---------- REGISTRATION ----------
-  REGISTRATION_OPTIONS_REQUESTED,
-  CREDENTIAL_REGISTERED,
+  REGISTRATION_OPTIONS_REQUESTED(AuditCategory.CEREMONY),
+  CREDENTIAL_REGISTERED(AuditCategory.CEREMONY),
 
   // ---------- AUTHENTICATION ----------
-  AUTHENTICATION_OPTIONS_REQUESTED,
-  CREDENTIAL_AUTHENTICATED,
-  SIGNATURE_COUNTER_REGRESSION,
-  CREDENTIAL_AUTH_RATE_LIMIT,
+  AUTHENTICATION_OPTIONS_REQUESTED(AuditCategory.CEREMONY),
+  CREDENTIAL_AUTHENTICATED(AuditCategory.CEREMONY),
+  SIGNATURE_COUNTER_REGRESSION(AuditCategory.SECURITY_FAIL),
+  CREDENTIAL_AUTH_RATE_LIMIT(AuditCategory.SECURITY_FAIL),
   // CTAP 2.1 Backup State (BS) flag change. Emitted when a passkey's syncable status flips
   // between sessions (e.g. iCloud Keychain or Google Password Manager backup turning on/off).
   // Compliance-sensitive RPs use this to revoke or downgrade trust on backed-up credentials.
-  CREDENTIAL_BACKUP_STATE_CHANGED,
+  CREDENTIAL_BACKUP_STATE_CHANGED(AuditCategory.CEREMONY),
 
   // ---------- CREDENTIAL_LIFECYCLE ----------
-  CREDENTIAL_REVOKED,
-  CREDENTIAL_RENAMED,
-  CREDENTIAL_REASSIGNED,
-  ATTESTATION_TRUST_FAILED,
-  CREDENTIAL_AUTO_SUSPENDED,
-  CREDENTIAL_UNSUSPENDED,
+  CREDENTIAL_REVOKED(AuditCategory.SECURITY_FAIL),
+  CREDENTIAL_RENAMED(AuditCategory.ADMIN_ACTION),
+  CREDENTIAL_REASSIGNED(AuditCategory.ADMIN_ACTION),
+  ATTESTATION_TRUST_FAILED(AuditCategory.SECURITY_FAIL),
+  CREDENTIAL_AUTO_SUSPENDED(AuditCategory.SECURITY_FAIL),
+  CREDENTIAL_UNSUSPENDED(AuditCategory.SECURITY_FAIL),
 
   // ---------- ADMIN ----------
-  TENANT_CREATED,
-  TENANT_SUSPENDED,
-  TENANT_ACTIVATED,
-  API_KEY_ISSUED,
-  API_KEY_REVOKED,
-  WEBAUTHN_CONFIG_UPDATED,
-  ADMIN_USER_CREATED,
-  ADMIN_USER_DELETED,
-  ADMIN_USER_PASSWORD_RESET,
-  USER_FORCE_LOGOUT,
+  TENANT_CREATED(AuditCategory.ADMIN_ACTION),
+  TENANT_SUSPENDED(AuditCategory.ADMIN_ACTION),
+  TENANT_ACTIVATED(AuditCategory.ADMIN_ACTION),
+  API_KEY_ISSUED(AuditCategory.ADMIN_ACTION),
+  API_KEY_REVOKED(AuditCategory.ADMIN_ACTION),
+  WEBAUTHN_CONFIG_UPDATED(AuditCategory.ADMIN_ACTION),
+  ADMIN_USER_CREATED(AuditCategory.ADMIN_ACTION),
+  ADMIN_USER_DELETED(AuditCategory.ADMIN_ACTION),
+  ADMIN_USER_PASSWORD_RESET(AuditCategory.ADMIN_ACTION),
+  USER_FORCE_LOGOUT(AuditCategory.ADMIN_ACTION),
+
+  // ---------- SESSION ----------
   /**
    * Admin revoked a single refresh token by id (per-session control). Sibling of USER_FORCE_LOGOUT
    * which mass-revokes; this is the targeted "kill one device" lever.
    */
-  REFRESH_TOKEN_REVOKED,
+  REFRESH_TOKEN_REVOKED(AuditCategory.ADMIN_ACTION);
 
-// ---------- SYSTEM ----------
-// Reserved for future hash-chain / scheduler / integration events. Currently unused.
-;
+  // ---------- SYSTEM ----------
+  // Reserved for future hash-chain / scheduler / integration events. Currently unused.
+
+  private final AuditCategory category;
+
+  AuditEventType(AuditCategory category) {
+    this.category = category;
+  }
+
+  public AuditCategory category() {
+    return category;
+  }
 }

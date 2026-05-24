@@ -50,6 +50,14 @@ const AdminUsersPage = lazy(() =>
 const SystemPage = lazy(() =>
   import("@/pages/SystemPage").then((m) => ({ default: m.SystemPage })),
 );
+const ActivityPage = lazy(() =>
+  import("@/pages/platform/ActivityPage").then((m) => ({ default: m.ActivityPage })),
+);
+const AuditChainMonitorPage = lazy(() =>
+  import("@/pages/platform/AuditChainMonitorPage").then((m) => ({
+    default: m.AuditChainMonitorPage,
+  })),
+);
 function PageFallback() {
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -76,6 +84,8 @@ export function App() {
           <Route element={<AppLayout />}>
             <Route element={<RequirePlatformOperator />}>
               <Route path="/tenants" element={<TenantsListPage />} />
+              <Route path="/platform/activity" element={<ActivityPage />} />
+              <Route path="/platform/audit-chain" element={<AuditChainMonitorPage />} />
               <Route path="/admins" element={<AdminUsersPage />} />
               <Route path="/system" element={<SystemPage />} />
             </Route>

@@ -394,3 +394,113 @@ export interface FunnelView {
   authenticationAttempted: number;
   authenticationSucceeded: number;
 }
+
+// ============================================================================
+// Platform Activity / Audit Chain — Phase A endpoints
+// See: server/src/main/java/com/crosscert/passkey/admin/controller/
+//   AdminPlatformActivityController.java
+//   AdminPlatformAuditChainController.java
+// ============================================================================
+
+/** Cross-tenant activity Top-5 row. */
+export interface TopTenantRow {
+  tenantId: string;
+  slug: string;
+  name: string;
+  eventCount24h: number;
+  activeCredentials: number;
+}
+
+/** HTTP request latency snapshot. null = histogram cold or percentile not published. */
+export interface LatencySnapshot {
+  avgMs: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
+}
+
+/** GET /api/v1/admin/platform/activity-summary?window=24h response.data */
+export interface ActivitySummary {
+  window: string;
+  activity24h: number;
+  adminMutations24h: number;
+  securityEvents24h: number;
+  latency: LatencySnapshot;
+  topTenants: TopTenantRow[];
+}
+
+/** Audit event category — server-side single source of truth (AuditEventType.category()). */
+export type AuditCategory = "CEREMONY" | "ADMIN_ACTION" | "SECURITY_FAIL";
+
+/** GET /api/v1/admin/platform/activity-feed item. */
+export interface FeedItem {
+  id: string;
+  createdAt: string; // ISO 8601
+  eventType: string; // AuditEventType.name() — kept as raw string, no exhaustive union
+  category: AuditCategory;
+  tenantId: string;
+  tenantName: string;
+  actorType: string;
+  actorIdShort: string | null;
+  subjectType: string | null;
+  subjectIdShort: string | null;
+}
+
+/** GET /api/v1/admin/platform/activity-feed response.data */
+export interface FeedPage {
+  items: FeedItem[];
+  nextCursor: string | null;
+}
+
+/** A tenant whose hash chain failed validation. */
+export interface TamperedTenantSummary {
+  tenantId: string;
+  slug: string;
+  name: string;
+  tamperedRowCount: number;
+  lastVerifiedAt: string; // ISO 8601
+}
+
+/** A single row in the chain status table. */
+export interface TenantChainRow {
+  tenantId: string;
+  slug: string;
+  name: string;
+  status: "INTACT" | "TAMPERED";
+  verifiedRows: number;
+  lastVerifiedAt: string;
+  tamperedRowCount: number;
+}
+
+/** GET /api/v1/admin/platform/audit-chain/status response.data */
+export interface AuditChainStatus {
+  totalTenants: number;
+  intactTenants: number;
+  tamperedTenants: TamperedTenantSummary[];
+  totalVerifiedRows: number;
+  schedulerCron: string;
+  schedulerNextRunAt: string;
+  adminPollingIntervalSec: number;
+  lastVerifyAvgMs: number | null;
+  lastVerifyP99Ms: number | null;
+  perTenant: TenantChainRow[];
+}
+
+/** Per-tenant verify outcome inside VerifyAllResult.perTenant. */
+export interface VerifyTenantResult {
+  tenantId: string;
+  intact: boolean;
+  verifiedRows: number;
+  tamperedRowCount: number;
+  durationMs: number;
+}
+
+/** POST /api/v1/admin/platform/audit-chain/verify response.data */
+export interface VerifyAllResult {
+  startedAt: string;
+  completedAt: string;
+  tenantsChecked: number;
+  tenantsIntact: number;
+  tenantsTampered: number;
+  perTenant: VerifyTenantResult[];
+  errors: string[];
+}
