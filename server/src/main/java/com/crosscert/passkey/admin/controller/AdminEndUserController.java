@@ -21,6 +21,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -141,11 +143,16 @@ public class AdminEndUserController {
     AdminAuthz.requireTenantAccess(tenantId);
     TenantUser user = requireUser(tenantId, tenantUserId);
 
+    Map<CredentialStatus, Long> counts = new EnumMap<>(CredentialStatus.class);
+    for (CredentialRepository.StatusCountRow row :
+        credentialRepo.countByTenantUserIdGroupedByStatus(tenantUserId)) {
+      counts.put(row.getStatus(), row.getCount());
+    }
     CredentialCounts cc =
         new CredentialCounts(
-            credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.ACTIVE),
-            credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.SUSPENDED),
-            credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.REVOKED));
+            counts.getOrDefault(CredentialStatus.ACTIVE, 0L),
+            counts.getOrDefault(CredentialStatus.SUSPENDED, 0L),
+            counts.getOrDefault(CredentialStatus.REVOKED, 0L));
     OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
     SessionCounts sc =
         new SessionCounts(refreshTokenRepo.countActiveByTenantUserId(tenantUserId, now));
@@ -226,9 +233,7 @@ public class AdminEndUserController {
     String idShort =
         c.getCredentialId() == null
             ? null
-            : c.getCredentialId().length() <= 8
-                ? c.getCredentialId()
-                : c.getCredentialId().substring(0, 8);
+            : c.getCredentialId().substring(0, Math.min(8, c.getCredentialId().length()));
     AaguidLabel label = aaguidLabelResolver.resolve(c.getAaguid());
     return new UserCredentialItemView(
         c.getId(),

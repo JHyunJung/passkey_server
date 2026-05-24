@@ -3,6 +3,7 @@ package com.crosscert.passkey.slice.admin;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -107,12 +108,17 @@ class AdminEndUserControllerSliceTest {
 
     TenantUser user = TenantUser.create(tenantId, "ext-9", "Carol");
     when(tenantUserRepo.findById(tenantUserId)).thenReturn(Optional.of(user));
-    when(credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.ACTIVE))
-        .thenReturn(2L);
-    when(credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.SUSPENDED))
-        .thenReturn(1L);
-    when(credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.REVOKED))
-        .thenReturn(0L);
+    var activeRow = mock(CredentialRepository.StatusCountRow.class);
+    when(activeRow.getStatus()).thenReturn(CredentialStatus.ACTIVE);
+    when(activeRow.getCount()).thenReturn(2L);
+    var suspendedRow = mock(CredentialRepository.StatusCountRow.class);
+    when(suspendedRow.getStatus()).thenReturn(CredentialStatus.SUSPENDED);
+    when(suspendedRow.getCount()).thenReturn(1L);
+    var revokedRow = mock(CredentialRepository.StatusCountRow.class);
+    when(revokedRow.getStatus()).thenReturn(CredentialStatus.REVOKED);
+    when(revokedRow.getCount()).thenReturn(0L);
+    when(credentialRepo.countByTenantUserIdGroupedByStatus(tenantUserId))
+        .thenReturn(java.util.List.of(activeRow, suspendedRow, revokedRow));
     when(refreshTokenRepo.countActiveByTenantUserId(eq(tenantUserId), any(OffsetDateTime.class)))
         .thenReturn(3L);
     when(auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()))
@@ -252,9 +258,9 @@ class AdminEndUserControllerSliceTest {
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value("C001"));
 
-    // The detail endpoint folds credentials via per-status COUNT queries; cross-tenant guard
+    // The detail endpoint folds credentials via per-status COUNT query; cross-tenant guard
     // must short-circuit BEFORE any of those run.
-    verify(credentialRepo, never()).countByTenantUserIdAndStatus(any(), any());
+    verify(credentialRepo, never()).countByTenantUserIdGroupedByStatus(any());
   }
 
   @Test
