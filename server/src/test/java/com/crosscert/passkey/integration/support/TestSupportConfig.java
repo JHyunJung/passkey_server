@@ -1,5 +1,6 @@
 package com.crosscert.passkey.integration.support;
 
+import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.tenant.repository.TenantRepository;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -21,5 +22,13 @@ public class TestSupportConfig {
       TenantUserRepository tenantUserRepository,
       TransactionTemplate txTemplate) {
     return new TenantSeed(tenantRepository, tenantUserRepository, txTemplate);
+  }
+
+  @Bean
+  public CredentialSeed credentialSeed(
+      CredentialRepository credentialRepository,
+      TenantSeed tenantSeed,
+      TransactionTemplate txTemplate) {
+    return new CredentialSeed(credentialRepository, tenantSeed, txTemplate);
   }
 }

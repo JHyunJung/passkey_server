@@ -22,10 +22,17 @@ public interface CredentialRepository extends JpaRepository<Credential, UUID> {
 
   List<Credential> findAllByTenantUserId(UUID tenantUserId);
 
+  /** Paged variant of {@link #findAllByTenantUserId(UUID)} for admin user-detail views. */
+  Page<Credential> findAllByTenantUserId(UUID tenantUserId, Pageable pageable);
+
   Page<Credential> findAllByTenantId(UUID tenantId, Pageable pageable);
 
   long countByTenantIdAndStatus(
       UUID tenantId, com.crosscert.passkey.credential.domain.CredentialStatus status);
+
+  /** Count credentials of a single user with a given status. Used for admin user-detail summary. */
+  long countByTenantUserIdAndStatus(
+      UUID tenantUserId, com.crosscert.passkey.credential.domain.CredentialStatus status);
 
   /** Group-by aggregate for the credentials stats panel. {@code aaguid} may be null. */
   interface AaguidCount {
