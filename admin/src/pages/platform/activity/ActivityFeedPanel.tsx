@@ -1,18 +1,24 @@
-import * as React from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { useActivityFeed } from "@/hooks/usePlatformActivity";
 import { FeedRow } from "@/pages/platform/activity/FeedRow";
 
-type Category = "all" | "ceremony" | "admin-action" | "security-fail";
+export type FeedCategory = "all" | "ceremony" | "admin-action" | "security-fail";
 
-const FILTERS: { value: Category; label: string }[] = [
+const FILTERS: { value: FeedCategory; label: string }[] = [
   { value: "all", label: "전체" },
   { value: "admin-action", label: "운영 액션" },
   { value: "security-fail", label: "보안 실패" },
 ];
 
-export function ActivityFeedPanel({ tenantIds }: { tenantIds: string[] }) {
-  const [category, setCategory] = React.useState<Category>("all");
+export function ActivityFeedPanel({
+  tenantIds,
+  category,
+  onCategoryChange,
+}: {
+  tenantIds: string[];
+  category: FeedCategory;
+  onCategoryChange: (c: FeedCategory) => void;
+}) {
   const q = useActivityFeed({ category, tenantIds });
   const items = q.data?.pages.flatMap((p) => p.items) ?? [];
   return (
@@ -36,7 +42,7 @@ export function ActivityFeedPanel({ tenantIds }: { tenantIds: string[] }) {
             <button
               key={f.value}
               type="button"
-              onClick={() => setCategory(f.value)}
+              onClick={() => onCategoryChange(f.value)}
               className="rounded-md px-2.5 py-1 text-[12px] font-medium"
               style={{
                 background: category === f.value ? "var(--brand-soft)" : "transparent",

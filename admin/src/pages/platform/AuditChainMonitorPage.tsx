@@ -1,3 +1,4 @@
+import * as React from "react";
 import { Download } from "lucide-react";
 import {
   useAuditChainStatus,
@@ -13,6 +14,18 @@ export function AuditChainMonitorPage() {
   const status = useAuditChainStatus();
   const verifyAll = useVerifyAllChain();
   const { toast } = useToast();
+
+  // Toast on transient status fetch errors. Caffeine TTL 60s + refetchInterval 60s
+  // means errors are rare, but the user shouldn't see indefinite skeletons.
+  React.useEffect(() => {
+    if (status.isError) {
+      toast({
+        variant: "destructive",
+        title: "Audit chain status를 불러오지 못했습니다",
+        description: "잠시 후 자동 재시도합니다.",
+      });
+    }
+  }, [status.isError, toast]);
 
   function handleReport() {
     if (!status.data) return;
@@ -72,7 +85,7 @@ export function AuditChainMonitorPage() {
             className="rounded-md px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-50"
             style={{ background: "var(--brand)" }}
           >
-            {verifyAll.isPending ? "검증 중…" : "# 전체 즉시 검증"}
+            {verifyAll.isPending ? "검증 중…" : "전체 즉시 검증"}
           </button>
         </div>
       </div>

@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "@/lib/api";
 import type { AuditChainStatus, VerifyAllResult } from "@/types/api";
 
-const STATUS_KEY = ["platform", "audit-chain", "status"] as const;
+/** Shared query key — exported so per-tenant verify can invalidate from outside this file. */
+export const AUDIT_CHAIN_STATUS_KEY = ["platform", "audit-chain", "status"] as const;
 
 /**
  * Cross-tenant audit chain status. Server-side Caffeine TTL 60s; we refetch on the
@@ -11,7 +12,7 @@ const STATUS_KEY = ["platform", "audit-chain", "status"] as const;
  */
 export function useAuditChainStatus(opts?: { enabled?: boolean }) {
   return useQuery({
-    queryKey: STATUS_KEY,
+    queryKey: AUDIT_CHAIN_STATUS_KEY,
     queryFn: () =>
       apiGet<AuditChainStatus>("/api/v1/admin/platform/audit-chain/status"),
     staleTime: 30_000,
@@ -30,7 +31,7 @@ export function useVerifyAllChain() {
         undefined,
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: STATUS_KEY });
+      qc.invalidateQueries({ queryKey: AUDIT_CHAIN_STATUS_KEY });
     },
   });
 }

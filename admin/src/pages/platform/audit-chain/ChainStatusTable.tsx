@@ -1,7 +1,9 @@
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
+import { AUDIT_CHAIN_STATUS_KEY } from "@/hooks/usePlatformAuditChain";
 import { useToast } from "@/hooks/useToast";
+import { EmptyState } from "@/components/EmptyState";
 import type { TenantChainRow } from "@/types/api";
 
 const nf = new Intl.NumberFormat("ko-KR");
@@ -22,11 +24,20 @@ export function ChainStatusTable({ rows }: { rows: TenantChainRow[] }) {
   const intactCount = rows.filter((r) => r.status === "INTACT").length;
   const tamperedCount = rows.length - intactCount;
 
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="검증할 tenant가 없습니다."
+        description="ACTIVE tenant가 생성되면 여기에서 chain 상태를 볼 수 있습니다."
+      />
+    );
+  }
+
   const verifyOne = useMutation({
     mutationFn: (tenantId: string) =>
       apiGet<unknown>(`/api/v1/admin/tenants/${tenantId}/audit-logs/verify`),
     onSuccess: (_data, tenantId) => {
-      qc.invalidateQueries({ queryKey: ["platform", "audit-chain", "status"] });
+      qc.invalidateQueries({ queryKey: AUDIT_CHAIN_STATUS_KEY });
       toast({ variant: "success", title: "tenant 검증 완료", description: tenantId });
     },
     onError: (err: { code?: string; message?: string }) => {

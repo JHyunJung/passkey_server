@@ -40,8 +40,12 @@ export function ChainMetricsRow({ status }: { status?: AuditChainStatus }) {
       />
       <MetricCard
         label="평균 chain 검증"
-        value={`${fmt(status.lastVerifyAvgMs)}ms`}
-        sub={`p99 ${fmt(status.lastVerifyP99Ms)}ms`}
+        value={status.lastVerifyAvgMs == null ? "—" : `${fmt(status.lastVerifyAvgMs)}ms`}
+        sub={
+          status.lastVerifyP99Ms == null
+            ? "메트릭 워밍업 중"
+            : `p99 ${fmt(status.lastVerifyP99Ms)}ms`
+        }
       />
     </div>
   );
