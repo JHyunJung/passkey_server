@@ -42,6 +42,16 @@ public interface CredentialRepository extends JpaRepository<Credential, UUID> {
           + "GROUP BY c.status")
   List<StatusCountRow> countByTenantUserIdGroupedByStatus(@Param("userId") UUID userId);
 
+  /**
+   * Latest {@code lastUsedAt} across all credentials of one user. Used to enrich the admin
+   * user-detail "last activity" timestamp — {@code CREDENTIAL_AUTHENTICATED} audit rows are keyed
+   * on the credential id, not the tenant_user_id, so a pure audit lookup misses ordinary login
+   * activity. A single aggregate query is cheap and avoids loading the whole credential list.
+   * Returns {@code null} when the user has no credentials, or no credential has been used yet.
+   */
+  @Query("SELECT MAX(c.lastUsedAt) FROM Credential c WHERE c.tenantUserId = :userId")
+  java.time.OffsetDateTime maxLastUsedAtByTenantUserId(@Param("userId") UUID userId);
+
   /** Projection for {@link #countByTenantUserIdGroupedByStatus}. */
   interface StatusCountRow {
     com.crosscert.passkey.credential.domain.CredentialStatus getStatus();

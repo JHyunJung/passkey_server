@@ -157,12 +157,14 @@ public class AdminEndUserController {
     SessionCounts sc =
         new SessionCounts(refreshTokenRepo.countActiveByTenantUserId(tenantUserId, now));
 
-    // Inline last-credential-lastUsedAt fold is no longer cheap (credentials aren't loaded
-    // here anymore — fetching them just to take max() would defeat the point of the paged
-    // endpoint). Rely on the audit-aggregation last-event timestamp instead; the UI renders
-    // "—" when null, identical to the previous behaviour for users with no audit signal.
+    // lastActivityAt = max(audit-last-event, max(credential.lastUsedAt)). CREDENTIAL_AUTHENTICATED
+    // audit rows are keyed on the credential id, not the tenant_user_id, so the audit lookup
+    // alone misses ordinary login activity — a separate aggregate query folds in the most recent
+    // credential usage without loading the full credential list.
     OffsetDateTime auditLast =
         auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()).orElse(null);
+    OffsetDateTime credentialLast = credentialRepo.maxLastUsedAtByTenantUserId(tenantUserId);
+    OffsetDateTime lastActivity = maxNullable(auditLast, credentialLast);
 
     return ApiResponse.ok(
         new EndUserDetailView(
@@ -173,7 +175,14 @@ public class AdminEndUserController {
             user.getUpdatedAt(),
             cc,
             sc,
-            auditLast));
+            lastActivity));
+  }
+
+  /** Returns the later of two timestamps, treating null as "no value". */
+  private static OffsetDateTime maxNullable(OffsetDateTime a, OffsetDateTime b) {
+    if (a == null) return b;
+    if (b == null) return a;
+    return a.isAfter(b) ? a : b;
   }
 
   @GetMapping("/{tenantUserId}/credentials")
