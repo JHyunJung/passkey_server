@@ -25,7 +25,7 @@ spring:
 
 passkey:
   admin:
-    enabled: false
+    enabled: true
     # vite dev server. Browsers send Origin=http://localhost:5173, which must match exactly.
     console-origin: http://localhost:5173
     datasource:
