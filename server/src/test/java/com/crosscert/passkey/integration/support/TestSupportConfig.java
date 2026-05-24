@@ -4,6 +4,7 @@ import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.tenant.repository.TenantRepository;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -35,6 +36,7 @@ public class TestSupportConfig {
   }
 
   @Bean
+  @ConditionalOnProperty(name = "passkey.admin.enabled", havingValue = "true")
   public RefreshTokenSeed refreshTokenSeed(
       @Qualifier("adminJdbcTemplate") NamedParameterJdbcTemplate adminJdbcTemplate) {
     return new RefreshTokenSeed(adminJdbcTemplate);
