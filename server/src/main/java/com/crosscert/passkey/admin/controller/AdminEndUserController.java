@@ -2,12 +2,17 @@ package com.crosscert.passkey.admin.controller;
 
 import com.crosscert.passkey.admin.security.AdminAuthz;
 import com.crosscert.passkey.audit.service.AuditAggregationService;
+import com.crosscert.passkey.auth.jwt.domain.RefreshToken;
+import com.crosscert.passkey.auth.jwt.domain.RevokedReason;
+import com.crosscert.passkey.auth.jwt.repository.RefreshTokenRepository;
 import com.crosscert.passkey.common.exception.BusinessException;
 import com.crosscert.passkey.common.exception.ErrorCode;
 import com.crosscert.passkey.common.response.ApiResponse;
 import com.crosscert.passkey.common.response.PageResponse;
-import com.crosscert.passkey.credential.api.CredentialView;
+import com.crosscert.passkey.credential.domain.Credential;
 import com.crosscert.passkey.credential.domain.CredentialStatus;
+import com.crosscert.passkey.credential.metadata.AaguidLabel;
+import com.crosscert.passkey.credential.metadata.AaguidLabelResolver;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
@@ -15,7 +20,7 @@ import com.crosscert.passkey.tenant.repository.TenantUserRepository.EndUserRow;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.OffsetDateTime;
-import java.util.List;
+import java.time.ZoneOffset;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -44,7 +49,9 @@ public class AdminEndUserController {
 
   private final TenantUserRepository tenantUserRepo;
   private final CredentialRepository credentialRepo;
+  private final RefreshTokenRepository refreshTokenRepo;
   private final AuditAggregationService auditAgg;
+  private final AaguidLabelResolver aaguidLabelResolver;
 
   /** One row of the end-user list. */
   public record EndUserView(
@@ -65,16 +72,46 @@ public class AdminEndUserController {
     }
   }
 
-  /** Full detail for one end-user: metadata, last activity, and the user's passkeys. */
+  /** Per-status credential count for the user-detail summary card. */
+  public record CredentialCounts(long active, long suspended, long revoked) {}
+
+  /** Per-status session count for the user-detail summary card. */
+  public record SessionCounts(long active) {}
+
+  /**
+   * End-user metadata + summary counts. No inline credentials — use the paged endpoint {@code GET
+   * /users/{id}/credentials}.
+   */
   public record EndUserDetailView(
       UUID id,
       String externalId,
       String displayName,
       OffsetDateTime createdAt,
       OffsetDateTime updatedAt,
-      long activeCredentialCount,
-      OffsetDateTime lastActivityAt,
-      List<CredentialView> credentials) {}
+      CredentialCounts credentials,
+      SessionCounts sessions,
+      OffsetDateTime lastActivityAt) {}
+
+  /** One row of the per-user credentials paged endpoint (with AAGUID label). */
+  public record UserCredentialItemView(
+      UUID id,
+      String credentialIdShort,
+      AaguidLabel aaguid,
+      CredentialStatus status,
+      String suspendedReason,
+      String nickname,
+      OffsetDateTime createdAt,
+      OffsetDateTime lastUsedAt) {}
+
+  /** One row of the per-user refresh-tokens paged endpoint. */
+  public record RefreshTokenView(
+      UUID id,
+      OffsetDateTime issuedAt,
+      OffsetDateTime expiresAt,
+      String clientIp,
+      String userAgent,
+      OffsetDateTime revokedAt,
+      RevokedReason revokedReason) {}
 
   @GetMapping
   @Transactional(readOnly = true)
@@ -98,10 +135,82 @@ public class AdminEndUserController {
 
   @GetMapping("/{tenantUserId}")
   @Transactional(readOnly = true)
-  @Operation(summary = "Get one end-user with passkeys and last-activity")
+  @Operation(summary = "Get one end-user with summary counts and last-activity")
   public ApiResponse<EndUserDetailView> detail(
       @PathVariable UUID tenantId, @PathVariable UUID tenantUserId) {
     AdminAuthz.requireTenantAccess(tenantId);
+    TenantUser user = requireUser(tenantId, tenantUserId);
+
+    CredentialCounts cc =
+        new CredentialCounts(
+            credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.ACTIVE),
+            credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.SUSPENDED),
+            credentialRepo.countByTenantUserIdAndStatus(tenantUserId, CredentialStatus.REVOKED));
+    OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+    SessionCounts sc =
+        new SessionCounts(refreshTokenRepo.countActiveByTenantUserId(tenantUserId, now));
+
+    // Inline last-credential-lastUsedAt fold is no longer cheap (credentials aren't loaded
+    // here anymore — fetching them just to take max() would defeat the point of the paged
+    // endpoint). Rely on the audit-aggregation last-event timestamp instead; the UI renders
+    // "—" when null, identical to the previous behaviour for users with no audit signal.
+    OffsetDateTime auditLast =
+        auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()).orElse(null);
+
+    return ApiResponse.ok(
+        new EndUserDetailView(
+            user.getId(),
+            user.getExternalId(),
+            user.getDisplayName(),
+            user.getCreatedAt(),
+            user.getUpdatedAt(),
+            cc,
+            sc,
+            auditLast));
+  }
+
+  @GetMapping("/{tenantUserId}/credentials")
+  @Transactional(readOnly = true)
+  @Operation(summary = "Paged credentials for one end-user (with AAGUID label)")
+  public ApiResponse<PageResponse<UserCredentialItemView>> credentials(
+      @PathVariable UUID tenantId,
+      @PathVariable UUID tenantUserId,
+      @RequestParam(defaultValue = "0") int page,
+      @RequestParam(defaultValue = "20") int size) {
+    AdminAuthz.requireTenantAccess(tenantId);
+    requireUser(tenantId, tenantUserId);
+    Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+    return ApiResponse.ok(
+        PageResponse.from(
+            credentialRepo
+                .findAllByTenantUserId(tenantUserId, pageable)
+                .map(this::toCredentialRow)));
+  }
+
+  @GetMapping("/{tenantUserId}/refresh-tokens")
+  @Transactional(readOnly = true)
+  @Operation(summary = "Paged refresh tokens for one end-user (status=active|all)")
+  public ApiResponse<PageResponse<RefreshTokenView>> refreshTokens(
+      @PathVariable UUID tenantId,
+      @PathVariable UUID tenantUserId,
+      @RequestParam(defaultValue = "active") String status,
+      @RequestParam(defaultValue = "0") int page,
+      @RequestParam(defaultValue = "20") int size) {
+    AdminAuthz.requireTenantAccess(tenantId);
+    requireUser(tenantId, tenantUserId);
+    // The @Query already orders by issuedAt DESC — don't add a Sort here or Spring will
+    // synthesize a second ORDER BY clause.
+    Pageable pageable = PageRequest.of(page, size);
+    OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+    var pageResult =
+        "all".equalsIgnoreCase(status)
+            ? refreshTokenRepo.findAllByTenantUserId(tenantUserId, pageable)
+            : refreshTokenRepo.findActiveByTenantUserId(tenantUserId, now, pageable);
+    return ApiResponse.ok(
+        PageResponse.from(pageResult.map(AdminEndUserController::toRefreshTokenRow)));
+  }
+
+  private TenantUser requireUser(UUID tenantId, UUID tenantUserId) {
     TenantUser user =
         tenantUserRepo
             .findById(tenantUserId)
@@ -110,44 +219,36 @@ public class AdminEndUserController {
       throw new BusinessException(
           ErrorCode.INVALID_INPUT, "tenantUserId does not belong to the path tenant");
     }
-    List<CredentialView> credentials =
-        credentialRepo.findAllByTenantUserId(tenantUserId).stream()
-            .map(CredentialView::from)
-            .toList();
-    long activeCount =
-        credentials.stream().filter(c -> CredentialStatus.ACTIVE.name().equals(c.status())).count();
-    // The most common successful event — CREDENTIAL_AUTHENTICATED — is audited with
-    // subject_id = credential id, not the tenant-user id, so lastEventForSubject misses it.
-    // Fold in the max credential lastUsedAt (credentials are already loaded — no extra query).
-    OffsetDateTime auditLast =
-        auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()).orElse(null);
-    OffsetDateTime credentialLast =
-        credentials.stream()
-            .map(CredentialView::lastUsedAt)
-            .filter(java.util.Objects::nonNull)
-            .max(java.util.Comparator.naturalOrder())
-            .orElse(null);
-    OffsetDateTime lastActivity = maxNullable(auditLast, credentialLast);
-    return ApiResponse.ok(
-        new EndUserDetailView(
-            user.getId(),
-            user.getExternalId(),
-            user.getDisplayName(),
-            user.getCreatedAt(),
-            user.getUpdatedAt(),
-            activeCount,
-            lastActivity,
-            credentials));
+    return user;
   }
 
-  /** Returns the later of two timestamps, treating null as "no value". */
-  private static OffsetDateTime maxNullable(OffsetDateTime a, OffsetDateTime b) {
-    if (a == null) {
-      return b;
-    }
-    if (b == null) {
-      return a;
-    }
-    return a.isAfter(b) ? a : b;
+  private UserCredentialItemView toCredentialRow(Credential c) {
+    String idShort =
+        c.getCredentialId() == null
+            ? null
+            : c.getCredentialId().length() <= 8
+                ? c.getCredentialId()
+                : c.getCredentialId().substring(0, 8);
+    AaguidLabel label = aaguidLabelResolver.resolve(c.getAaguid());
+    return new UserCredentialItemView(
+        c.getId(),
+        idShort,
+        label,
+        c.getStatus(),
+        c.getSuspendedReason(),
+        c.getNickname(),
+        c.getCreatedAt(),
+        c.getLastUsedAt());
+  }
+
+  private static RefreshTokenView toRefreshTokenRow(RefreshToken r) {
+    return new RefreshTokenView(
+        r.getId(),
+        r.getIssuedAt(),
+        r.getExpiresAt(),
+        r.getClientIp(),
+        r.getUserAgent(),
+        r.getRevokedAt(),
+        r.getRevokedReason());
   }
 }
