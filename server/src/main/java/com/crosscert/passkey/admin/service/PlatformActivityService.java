@@ -49,6 +49,22 @@ public class PlatformActivityService {
       LatencySnapshot latency,
       List<TopTenantRow> topTenants) {}
 
+  /** activity-feed의 한 항목. */
+  public record FeedItem(
+      UUID id,
+      OffsetDateTime createdAt,
+      AuditEventType eventType,
+      AuditCategory category,
+      UUID tenantId,
+      String tenantName,
+      String actorType,
+      String actorIdShort,
+      String subjectType,
+      String subjectIdShort) {}
+
+  /** activity-feed cursor 페이지. */
+  public record FeedPage(List<FeedItem> items, String nextCursor) {}
+
   private static final String COUNT_TOTAL_SINCE =
       "SELECT count(*) FROM audit_log WHERE created_at >= :since";
 
@@ -161,22 +177,6 @@ public class PlatformActivityService {
     return new UUID(bb.getLong(), bb.getLong());
   }
 
-  /** activity-feed의 한 항목. */
-  public record FeedItem(
-      UUID id,
-      OffsetDateTime createdAt,
-      AuditEventType eventType,
-      AuditCategory category,
-      UUID tenantId,
-      String tenantName,
-      String actorType,
-      String actorIdShort,
-      String subjectType,
-      String subjectIdShort) {}
-
-  /** activity-feed cursor 페이지. */
-  public record FeedPage(List<FeedItem> items, String nextCursor) {}
-
   private static final int FEED_PAGE_SIZE = 30;
 
   /**
@@ -184,10 +184,13 @@ public class PlatformActivityService {
    * ({@code createdAt}, {@code id}) — opaque base64 인코딩.
    *
    * <p>{@code category} ∈ {"all", "ceremony", "admin-action", "security-fail"}. {@code tenantIds}가
-   * 비어있으면 모든 tenant.
+   * 비어있으면 모든 tenant. {@code tenantIds.size()}는 Oracle IN-list 제약상 최대 1000.
    */
   @Transactional(value = "adminTransactionManager", readOnly = true)
   public FeedPage feed(String cursor, String category, List<UUID> tenantIds) {
+    if (tenantIds != null && tenantIds.size() > 1000) {
+      throw new IllegalArgumentException("tenantIds size must be <= 1000 (Oracle IN-list limit)");
+    }
     StringBuilder sql =
         new StringBuilder(
             "SELECT a.id, a.created_at, a.event_type, a.tenant_id, t.name AS tenant_name, "
