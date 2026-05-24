@@ -149,5 +149,13 @@ export async function apiDelete<T = void>(
   path: string,
   config?: AxiosRequestConfig,
 ): Promise<T> {
-  return unwrap<T>(await api.delete<ApiEnvelope<T>>(path, config));
+  const response = await api.delete<ApiEnvelope<T>>(path, config);
+  // 204 No Content는 spring의 @ResponseStatus(NO_CONTENT)가 envelope 본문을 버리고 빈 body를
+  // 내려준다 (예: DELETE /credentials/{id}). unwrap()은 success=true envelope을 기대하므로
+  // 빈 body를 만나면 UNKNOWN 에러로 throw한다 — 204를 정상 성공으로 처리한다. T는 void인 경우만
+  // 자연스럽지만, 호출자가 T를 지정한 채 204를 받으면 undefined가 그 자리에 들어간다.
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  return unwrap<T>(response);
 }

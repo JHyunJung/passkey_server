@@ -15,10 +15,12 @@ import com.crosscert.passkey.admin.controller.AdminEndUserController;
 import com.crosscert.passkey.admin.domain.AdminRole;
 import com.crosscert.passkey.admin.security.AdminPrincipal;
 import com.crosscert.passkey.audit.service.AuditAggregationService;
+import com.crosscert.passkey.auth.jwt.repository.RefreshTokenRepository;
 import com.crosscert.passkey.common.exception.GlobalExceptionHandler;
 import com.crosscert.passkey.common.filter.TraceIdFilter;
-import com.crosscert.passkey.credential.domain.Credential;
 import com.crosscert.passkey.credential.domain.CredentialStatus;
+import com.crosscert.passkey.credential.metadata.AaguidLabel;
+import com.crosscert.passkey.credential.metadata.AaguidLabelResolver;
 import com.crosscert.passkey.credential.repository.CredentialRepository;
 import com.crosscert.passkey.tenant.domain.TenantUser;
 import com.crosscert.passkey.tenant.repository.TenantUserRepository;
@@ -57,7 +59,9 @@ class AdminEndUserControllerSliceTest {
   @Autowired MockMvc mvc;
   @MockBean TenantUserRepository tenantUserRepo;
   @MockBean CredentialRepository credentialRepo;
+  @MockBean RefreshTokenRepository refreshTokenRepo;
   @MockBean AuditAggregationService auditAgg;
+  @MockBean AaguidLabelResolver aaguidLabelResolver;
 
   @AfterEach
   void clear() {
@@ -97,14 +101,26 @@ class AdminEndUserControllerSliceTest {
   }
 
   @Test
-  void detail_returns_user_with_credentials() throws Exception {
+  void detail_returns_counts_summary_no_inline_credentials() throws Exception {
     UUID tenantId = UUID.randomUUID();
     UUID tenantUserId = UUID.randomUUID();
     loginAs(AdminRole.PLATFORM_OPERATOR, null);
 
     TenantUser user = TenantUser.create(tenantId, "ext-9", "Carol");
     when(tenantUserRepo.findById(tenantUserId)).thenReturn(Optional.of(user));
-    when(credentialRepo.findAllByTenantUserId(tenantUserId)).thenReturn(List.of());
+    var activeRow = mock(CredentialRepository.StatusCountRow.class);
+    when(activeRow.getStatus()).thenReturn(CredentialStatus.ACTIVE);
+    when(activeRow.getCount()).thenReturn(2L);
+    var suspendedRow = mock(CredentialRepository.StatusCountRow.class);
+    when(suspendedRow.getStatus()).thenReturn(CredentialStatus.SUSPENDED);
+    when(suspendedRow.getCount()).thenReturn(1L);
+    var revokedRow = mock(CredentialRepository.StatusCountRow.class);
+    when(revokedRow.getStatus()).thenReturn(CredentialStatus.REVOKED);
+    when(revokedRow.getCount()).thenReturn(0L);
+    when(credentialRepo.countByTenantUserIdGroupedByStatus(tenantUserId))
+        .thenReturn(java.util.List.of(activeRow, suspendedRow, revokedRow));
+    when(refreshTokenRepo.countActiveByTenantUserId(eq(tenantUserId), any(OffsetDateTime.class)))
+        .thenReturn(3L);
     when(auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()))
         .thenReturn(Optional.of(OffsetDateTime.now(ZoneOffset.UTC)));
 
@@ -112,44 +128,120 @@ class AdminEndUserControllerSliceTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.success").value(true))
         .andExpect(jsonPath("$.data.externalId").value("ext-9"))
-        .andExpect(jsonPath("$.data.credentials").isArray())
+        .andExpect(jsonPath("$.data.credentials.active").value(2))
+        .andExpect(jsonPath("$.data.credentials.suspended").value(1))
+        .andExpect(jsonPath("$.data.credentials.revoked").value(0))
+        .andExpect(jsonPath("$.data.sessions.active").value(3))
+        // The old List shape is gone — the field is an object now.
+        .andExpect(jsonPath("$.data.credentials[0]").doesNotExist())
         .andExpect(jsonPath("$.data.lastActivityAt").exists());
   }
 
   @Test
-  void detail_last_activity_includes_credential_last_used() throws Exception {
+  void detail_last_activity_uses_audit_signal() throws Exception {
     UUID tenantId = UUID.randomUUID();
     UUID tenantUserId = UUID.randomUUID();
     loginAs(AdminRole.PLATFORM_OPERATOR, null);
 
     TenantUser user = TenantUser.create(tenantId, "ext-login", "Dave");
     when(tenantUserRepo.findById(tenantUserId)).thenReturn(Optional.of(user));
+    when(refreshTokenRepo.countActiveByTenantUserId(eq(tenantUserId), any(OffsetDateTime.class)))
+        .thenReturn(0L);
 
-    // CREDENTIAL_AUTHENTICATED audit rows are keyed by credential id, not the tenant-user id,
-    // so the only last-activity signal here is the credential's lastUsedAt.
-    OffsetDateTime credentialLastUsed = OffsetDateTime.now(ZoneOffset.UTC);
-    Credential credential = mock(Credential.class);
-    when(credential.getId()).thenReturn(UUID.randomUUID());
-    when(credential.getTenantUserId()).thenReturn(tenantUserId);
-    when(credential.getCredentialId()).thenReturn("cred-login");
-    when(credential.getNickname()).thenReturn("Dave's passkey");
-    when(credential.getStatus()).thenReturn(CredentialStatus.ACTIVE);
-    when(credential.getAaguid()).thenReturn(null);
-    when(credential.getTransports()).thenReturn(null);
-    when(credential.getSignatureCounter()).thenReturn(0L);
-    when(credential.getLastUsedAt()).thenReturn(credentialLastUsed);
-    when(credential.getCreatedAt()).thenReturn(credentialLastUsed);
-    when(credential.getRevokedAt()).thenReturn(null);
-    when(credential.getRevokedReason()).thenReturn(null);
-    when(credentialRepo.findAllByTenantUserId(tenantUserId)).thenReturn(List.of(credential));
-
+    OffsetDateTime auditLast = OffsetDateTime.now(ZoneOffset.UTC);
     when(auditAgg.lastEventForSubject(tenantId, tenantUserId.toString()))
-        .thenReturn(Optional.empty());
+        .thenReturn(Optional.of(auditLast));
 
     mvc.perform(get("/api/v1/admin/tenants/{tenantId}/users/{userId}", tenantId, tenantUserId))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.success").value(true))
         .andExpect(jsonPath("$.data.lastActivityAt").exists());
+  }
+
+  @Test
+  void credentials_paged_returns_aaguid_label() throws Exception {
+    UUID tenantId = UUID.randomUUID();
+    UUID tenantUserId = UUID.randomUUID();
+    loginAs(AdminRole.PLATFORM_OPERATOR, null);
+
+    TenantUser user = TenantUser.create(tenantId, "ext-c", "Eve");
+    when(tenantUserRepo.findById(tenantUserId)).thenReturn(Optional.of(user));
+
+    com.crosscert.passkey.credential.domain.Credential c =
+        org.mockito.Mockito.mock(com.crosscert.passkey.credential.domain.Credential.class);
+    when(c.getId()).thenReturn(UUID.randomUUID());
+    when(c.getCredentialId()).thenReturn("abcd1234efgh");
+    UUID aaguidId = UUID.randomUUID();
+    when(c.getAaguid()).thenReturn(aaguidId);
+    when(c.getStatus()).thenReturn(CredentialStatus.ACTIVE);
+    when(c.getSuspendedReason()).thenReturn(null);
+    when(c.getNickname()).thenReturn("Eve passkey");
+    when(c.getCreatedAt()).thenReturn(OffsetDateTime.now(ZoneOffset.UTC));
+    when(c.getLastUsedAt()).thenReturn(null);
+
+    when(credentialRepo.findAllByTenantUserId(eq(tenantUserId), any(Pageable.class)))
+        .thenReturn(new PageImpl<>(List.of(c), Pageable.ofSize(20), 1));
+    when(aaguidLabelResolver.resolve(aaguidId))
+        .thenReturn(new AaguidLabel(aaguidId, "iCloud Keychain", true));
+
+    mvc.perform(
+            get(
+                "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials",
+                tenantId,
+                tenantUserId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.content[0].credentialIdShort").value("abcd1234"))
+        .andExpect(jsonPath("$.data.content[0].aaguid.displayName").value("iCloud Keychain"))
+        .andExpect(jsonPath("$.data.content[0].aaguid.fromMds").value(true))
+        .andExpect(jsonPath("$.data.content[0].status").value("ACTIVE"));
+  }
+
+  @Test
+  void refreshTokens_default_status_active_queries_active_only() throws Exception {
+    UUID tenantId = UUID.randomUUID();
+    UUID tenantUserId = UUID.randomUUID();
+    loginAs(AdminRole.PLATFORM_OPERATOR, null);
+
+    TenantUser user = TenantUser.create(tenantId, "ext-t", "Frank");
+    when(tenantUserRepo.findById(tenantUserId)).thenReturn(Optional.of(user));
+    when(refreshTokenRepo.findActiveByTenantUserId(
+            eq(tenantUserId), any(OffsetDateTime.class), any(Pageable.class)))
+        .thenReturn(new PageImpl<>(List.of(), Pageable.ofSize(20), 0));
+
+    mvc.perform(
+            get(
+                "/api/v1/admin/tenants/{tenantId}/users/{userId}/refresh-tokens",
+                tenantId,
+                tenantUserId))
+        .andExpect(status().isOk());
+
+    verify(refreshTokenRepo)
+        .findActiveByTenantUserId(eq(tenantUserId), any(OffsetDateTime.class), any(Pageable.class));
+    verify(refreshTokenRepo, never()).findAllByTenantUserId(any(), any(Pageable.class));
+  }
+
+  @Test
+  void refreshTokens_status_all_queries_all() throws Exception {
+    UUID tenantId = UUID.randomUUID();
+    UUID tenantUserId = UUID.randomUUID();
+    loginAs(AdminRole.PLATFORM_OPERATOR, null);
+
+    TenantUser user = TenantUser.create(tenantId, "ext-t", "Grace");
+    when(tenantUserRepo.findById(tenantUserId)).thenReturn(Optional.of(user));
+    when(refreshTokenRepo.findAllByTenantUserId(eq(tenantUserId), any(Pageable.class)))
+        .thenReturn(new PageImpl<>(List.of(), Pageable.ofSize(20), 0));
+
+    mvc.perform(
+            get(
+                    "/api/v1/admin/tenants/{tenantId}/users/{userId}/refresh-tokens",
+                    tenantId,
+                    tenantUserId)
+                .param("status", "all"))
+        .andExpect(status().isOk());
+
+    verify(refreshTokenRepo).findAllByTenantUserId(eq(tenantUserId), any(Pageable.class));
+    verify(refreshTokenRepo, never())
+        .findActiveByTenantUserId(any(), any(OffsetDateTime.class), any(Pageable.class));
   }
 
   @Test
@@ -166,7 +258,9 @@ class AdminEndUserControllerSliceTest {
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value("C001"));
 
-    verify(credentialRepo, never()).findAllByTenantUserId(any());
+    // The detail endpoint folds credentials via per-status COUNT query; cross-tenant guard
+    // must short-circuit BEFORE any of those run.
+    verify(credentialRepo, never()).countByTenantUserIdGroupedByStatus(any());
   }
 
   @Test

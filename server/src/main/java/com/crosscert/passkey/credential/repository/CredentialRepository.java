@@ -22,10 +22,42 @@ public interface CredentialRepository extends JpaRepository<Credential, UUID> {
 
   List<Credential> findAllByTenantUserId(UUID tenantUserId);
 
+  /** Paged variant of {@link #findAllByTenantUserId(UUID)} for admin user-detail views. */
+  Page<Credential> findAllByTenantUserId(UUID tenantUserId, Pageable pageable);
+
   Page<Credential> findAllByTenantId(UUID tenantId, Pageable pageable);
 
   long countByTenantIdAndStatus(
       UUID tenantId, com.crosscert.passkey.credential.domain.CredentialStatus status);
+
+  /** Count credentials of a single user with a given status. Used for admin user-detail summary. */
+  long countByTenantUserIdAndStatus(
+      UUID tenantUserId, com.crosscert.passkey.credential.domain.CredentialStatus status);
+
+  /** Status → count for a single user. Used for admin user-detail summary in a single query. */
+  @Query(
+      "SELECT c.status AS status, COUNT(c) AS count "
+          + "FROM Credential c "
+          + "WHERE c.tenantUserId = :userId "
+          + "GROUP BY c.status")
+  List<StatusCountRow> countByTenantUserIdGroupedByStatus(@Param("userId") UUID userId);
+
+  /**
+   * Latest {@code lastUsedAt} across all credentials of one user. Used to enrich the admin
+   * user-detail "last activity" timestamp — {@code CREDENTIAL_AUTHENTICATED} audit rows are keyed
+   * on the credential id, not the tenant_user_id, so a pure audit lookup misses ordinary login
+   * activity. A single aggregate query is cheap and avoids loading the whole credential list.
+   * Returns {@code null} when the user has no credentials, or no credential has been used yet.
+   */
+  @Query("SELECT MAX(c.lastUsedAt) FROM Credential c WHERE c.tenantUserId = :userId")
+  java.time.OffsetDateTime maxLastUsedAtByTenantUserId(@Param("userId") UUID userId);
+
+  /** Projection for {@link #countByTenantUserIdGroupedByStatus}. */
+  interface StatusCountRow {
+    com.crosscert.passkey.credential.domain.CredentialStatus getStatus();
+
+    long getCount();
+  }
 
   /** Group-by aggregate for the credentials stats panel. {@code aaguid} may be null. */
   interface AaguidCount {

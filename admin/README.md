@@ -61,3 +61,11 @@ src/
 - `server.servlet.session.cookie.same-site=none` (Spring Session cookie)
 
 local 개발은 Vite proxy로 same-origin이라 별도 설정 불필요.
+
+## 사용자 360° 뷰
+
+테넌트 상세 → Users 탭에서 사용자를 선택하면 Credentials/Sessions 탭으로 구성된 상세 화면이 열린다.
+
+- **Credentials 탭**: AAGUID 라벨(MDS BLOB 기반 — 미등재 인증기는 "미등록" 배지), 상태별 액션(Revoke / Unsuspend) 제공
+- **Sessions 탭**: 활성 refresh token 페이지네이션, 개별 회수 + "모두 로그아웃"
+- **자동 vs 수동 SUSPEND**: 자동 SUSPEND는 MDS 정기 스캔 전용. 수동 SUSPEND 액션은 콘솔에 없다.

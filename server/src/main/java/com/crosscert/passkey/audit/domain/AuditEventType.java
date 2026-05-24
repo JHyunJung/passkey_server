@@ -41,6 +41,11 @@ public enum AuditEventType {
   ADMIN_USER_DELETED,
   ADMIN_USER_PASSWORD_RESET,
   USER_FORCE_LOGOUT,
+  /**
+   * Admin revoked a single refresh token by id (per-session control). Sibling of USER_FORCE_LOGOUT
+   * which mass-revokes; this is the targeted "kill one device" lever.
+   */
+  REFRESH_TOKEN_REVOKED,
 
 // ---------- SYSTEM ----------
 // Reserved for future hash-chain / scheduler / integration events. Currently unused.
