@@ -2,7 +2,6 @@ package com.crosscert.passkey.credential.metadata;
 
 import com.crosscert.passkey.fido2.mds.MdsTrustAnchorSource;
 import com.crosscert.passkey.fido2.mds.MetadataBlob;
-import jakarta.annotation.PostConstruct;
 import java.io.InputStream;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -12,7 +11,9 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
@@ -51,7 +52,14 @@ public class MdsBlobProvider {
         rootCa.getSubjectX500Principal().getName());
   }
 
-  @PostConstruct
+  /**
+   * Warm up on {@link ApplicationReadyEvent} rather than {@code @PostConstruct} so the {@link
+   * MdsBlobRefreshedEvent} published from {@link #refresh()} reaches every {@code @EventListener}
+   * bean — at {@code @PostConstruct} time the listener registry isn't fully populated yet and the
+   * startup event can be silently dropped, leaving credentials un-suspended until the next
+   * scheduled refresh.
+   */
+  @EventListener(ApplicationReadyEvent.class)
   void warmUp() {
     try {
       refresh();
