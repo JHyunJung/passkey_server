@@ -2,7 +2,9 @@ package com.crosscert.passkey.auth.jwt.repository;
 
 import com.crosscert.passkey.auth.jwt.domain.RevokedReason;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -28,6 +30,15 @@ import org.springframework.transaction.annotation.Transactional;
 @ConditionalOnProperty(name = "passkey.admin.enabled", havingValue = "true")
 public class RefreshTokenAdminWriter {
 
+  /**
+   * Max bound expressions per IN-clause. Oracle's hard limit is 1000 ({@code ORA-01795}); 500
+   * leaves headroom for any additional binds in the same statement and matches a common safe
+   * default. An MDS scan that suspends &gt;500 distinct {@code tenant_user_id}s would otherwise
+   * raise ORA-01795 here — the credential SUSPEND has already committed in a prior admin tx, so the
+   * failure would leave those sessions live until manually fixed.
+   */
+  public static final int CHUNK_SIZE = 500;
+
   private final NamedParameterJdbcTemplate admin;
 
   /**
@@ -44,23 +55,44 @@ public class RefreshTokenAdminWriter {
    * {@code tenantUserIds}. Idempotent — already-revoked rows are skipped via the {@code WHERE
    * revoked_at IS NULL} guard, so calling this twice in a row will affect 0 the second time.
    *
-   * @return number of rows actually transitioned to revoked.
+   * <p>The id set is partitioned into chunks of at most {@link #CHUNK_SIZE} so the generated {@code
+   * IN (...)} list never exceeds Oracle's 1000-expression cap ({@code ORA-01795}). All chunks run
+   * in the same {@code adminTransactionManager} transaction — partial failures roll the entire
+   * revoke back, so callers still get all-or-nothing semantics.
+   *
+   * @return number of rows actually transitioned to revoked across all chunks.
    */
   @Transactional("adminTransactionManager")
   public int revokeAllByTenantUserIds(Set<UUID> tenantUserIds, RevokedReason reason) {
     if (tenantUserIds == null || tenantUserIds.isEmpty()) {
       return 0;
     }
+    // Chunk to stay under Oracle's 1000-expression IN-list cap (ORA-01795). All chunks share the
+    // outer @Transactional so a mid-chunk failure rolls the whole revoke back, preserving
+    // all-or-nothing semantics that callers (MdsRevocationScanService) rely on.
+    List<UUID> ordered = new ArrayList<>(tenantUserIds);
+    int total = 0;
+    for (int from = 0; from < ordered.size(); from += CHUNK_SIZE) {
+      int to = Math.min(from + CHUNK_SIZE, ordered.size());
+      total += revokeChunk(ordered.subList(from, to), reason);
+    }
+    return total;
+  }
+
+  /**
+   * Revoke a single IN-list chunk. Sized by the caller to stay under {@link #CHUNK_SIZE}. Must run
+   * inside the outer {@link #revokeAllByTenantUserIds} transaction — extracting the JDBC call lets
+   * the chunking logic above stay declarative without losing the all-or-nothing rollback.
+   */
+  private int revokeChunk(List<UUID> chunk, RevokedReason reason) {
     // Expand the IN list manually — Spring's named-param list expansion on RAW(16) IN-clauses is
     // finicky on Oracle, so we bind each id individually. Same idiom as CredentialAdminWriter.
     StringBuilder inClause = new StringBuilder();
     MapSqlParameterSource params = new MapSqlParameterSource().addValue("reason", reason.name());
-    int i = 0;
-    for (UUID uid : tenantUserIds) {
+    for (int i = 0; i < chunk.size(); i++) {
       if (i > 0) inClause.append(',');
       inClause.append("HEXTORAW(:u").append(i).append(")");
-      params.addValue("u" + i, uuidToHex(uid));
-      i++;
+      params.addValue("u" + i, uuidToHex(chunk.get(i)));
     }
     return admin.update(
         "UPDATE refresh_token "

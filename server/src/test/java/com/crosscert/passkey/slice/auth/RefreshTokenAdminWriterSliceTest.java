@@ -8,6 +8,7 @@ import com.crosscert.passkey.integration.support.AdminEnabledIntegrationTestBase
 import com.crosscert.passkey.integration.support.TenantSeed;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.core.namedparam.SqlParameterSource;
 
 /**
  * Slice test for {@link RefreshTokenAdminWriter}: covers the cross-tenant bulk revoke path used by
@@ -89,6 +91,46 @@ class RefreshTokenAdminWriterSliceTest extends AdminEnabledIntegrationTestBase {
             new MapSqlParameterSource("u", hex(userA)),
             Integer.class);
     assertThat(rotatedOnA).isEqualTo(1);
+  }
+
+  /**
+   * Oracle's 1000-expression IN-list cap (ORA-01795) is a real failure mode for an MDS scan that
+   * suspends a wide AAGUID. Pass {@code CHUNK_SIZE + 100} distinct {@code tenant_user_id}s so the
+   * writer is forced into &gt;1 chunk, and assert every live token transitioned — proving both that
+   * no ORA-01795 was raised and that the chunked total is correct.
+   */
+  @Test
+  void revokeAllByTenantUserIds_aboveChunkSize_chunksAndRevokesAll() {
+    int n = RefreshTokenAdminWriter.CHUNK_SIZE + 100;
+    LinkedHashSet<UUID> users = new LinkedHashSet<>(n);
+    SqlParameterSource[] batch = new SqlParameterSource[n];
+    OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+    for (int i = 0; i < n; i++) {
+      UUID uid = seed.createUser(tenantA, "bulk-" + i + "-" + UUID.randomUUID());
+      users.add(uid);
+      batch[i] =
+          new MapSqlParameterSource()
+              .addValue("id", hex(UUID.randomUUID()))
+              .addValue("tid", hex(tenantA))
+              .addValue("uid", hex(uid))
+              .addValue("now", now)
+              .addValue("expires", now.plusDays(7));
+    }
+    admin.batchUpdate(
+        "INSERT INTO refresh_token "
+            + "(id, tenant_id, tenant_user_id, issued_at, expires_at, created_at, updated_at) "
+            + "VALUES (HEXTORAW(:id), HEXTORAW(:tid), HEXTORAW(:uid), :now, :expires, :now, :now)",
+        batch);
+
+    int revoked = writer.revokeAllByTenantUserIds(users, RevokedReason.CREDENTIAL_SUSPENDED);
+
+    assertThat(revoked).isEqualTo(n);
+    Integer remainingLive =
+        admin.queryForObject(
+            "SELECT COUNT(*) FROM refresh_token WHERE tenant_id = HEXTORAW(:tid) AND revoked_at IS NULL",
+            new MapSqlParameterSource("tid", hex(tenantA)),
+            Integer.class);
+    assertThat(remainingLive).isZero();
   }
 
   // ---- helpers --------------------------------------------------------------------------------
